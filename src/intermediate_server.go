@@ -1,3 +1,6 @@
+//go:build intermediate
+// +build intermediate
+
 package main
 
 import (
