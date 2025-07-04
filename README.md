@@ -1,12 +1,9 @@
 # p2p-quic-migration
 P2P QUIC with seamless connection migration.
 
-This project uses [a modified quic-go](https://github.com/kota-yata/quic-go).
+This project uses [modified quic-go](https://github.com/kota-yata/quic-go).
 
 ## Building individual binaries
-
-All source files now live in `src/` and use build tags. Build each component with:
-
 ```bash
 # Build client
 go build -tags client -o bin/client ./src
