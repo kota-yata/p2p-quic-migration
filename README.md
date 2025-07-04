@@ -21,6 +21,7 @@ go build -tags intermediate -o bin/intermediate-server ./src
 You can also run them directly with `go run` using the corresponding tag. For example:
 
 ```bash
+go run -tags intermediate ./src -cert server.crt -key server.key
 go run -tags client ./src
 ```
 
