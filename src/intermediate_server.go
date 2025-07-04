@@ -15,7 +15,7 @@ import (
 func main() {
 	key := flag.String("key", "", "TLS key (requires -cert option)")
 	cert := flag.String("cert", "", "TLS certificate (requires -key option)")
-	addr := flag.String("addr", "127.0.0.1:12345", "Address to bind to")
+	addr := flag.String("addr", "0.0.0.0:12345", "Address to bind to")
 	flag.Parse()
 
 	cer, err := tls.LoadX509KeyPair(*cert, *key)
