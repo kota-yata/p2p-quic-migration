@@ -37,14 +37,12 @@ func main() {
 
 	fmt.Printf("Connected to QUIC server at %s\n", serverAddr)
 
-	// wait for few seconds to ensure the connection is established
-	time.Sleep(2 * time.Second)
-
-	// Check for observed address from the connection
-	if observedAddr := conn.GetObservedAddress(); observedAddr != nil {
-		fmt.Printf("Observed address received: %s\n", observedAddr.String())
-	} else {
-		fmt.Printf("No observed address received yet\n")
+	for {
+		// Check for observed address from the connection and break if received
+		if observedAddr := conn.GetObservedAddress(); observedAddr != nil {
+			fmt.Printf("Observed address received: %s\n", observedAddr.String())
+			break
+		}
 	}
 
 	stream, err := conn.OpenStreamSync(context.Background())
