@@ -9,29 +9,74 @@ import (
 	"crypto/tls"
 	"flag"
 	"log"
+	"net"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
 
 func main() {
-	key := flag.String("key", "", "TLS key (requires -cert option)")
-	cert := flag.String("cert", "", "TLS certificate (requires -key option)")
+	key := flag.String("key", "server.key", "TLS key (requires -cert option)")
+	cert := flag.String("cert", "server.crt", "TLS certificate (requires -key option)")
+	serverAddr := flag.String("serverAddr", "203.178.143.72:12345", "Address to intermediary server")
 	flag.Parse()
 
 	cer, err := tls.LoadX509KeyPair(*cert, *key)
-	tlsConf := &tls.Config{
-		Certificates: []tls.Certificate{cer},
-		NextProtos:   []string{"p2p-quic"},
+	if err != nil {
+		log.Fatalf("Failed to load certificate: %v", err)
 	}
-	quicConf := &quic.Config{}
 
-	ln, err := quic.ListenAddr("127.0.0.1:12345", tlsConf, quicConf)
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: true,
+		Certificates:       []tls.Certificate{cer},
+		NextProtos:         []string{"p2p-quic"},
+	}
+	quicConfig := &quic.Config{
+		AddressDiscoveryMode: 1, // Request address observations
+	}
+
+	udpAddr, err := net.ResolveUDPAddr("udp", *serverAddr)
+	if err != nil {
+		log.Fatalf("Failed to resolve server address: %v", err)
+	}
+
+	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: 1234, IP: net.IPv4zero})
+	if err != nil {
+		log.Fatalf("Failed to listen on UDP: %v", err)
+	}
+	defer udpConn.Close()
+
+	tr := quic.Transport{
+		Conn: udpConn,
+	}
+	defer tr.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := tr.Dial(ctx, udpAddr, tlsConfig, quicConfig)
+	if err != nil {
+		log.Fatalf("Failed to connect to intermediate server: %v", err)
+	}
+	defer conn.CloseWithError(0, "")
+
+	log.Printf("Connected to intermediate server at %s\n", *serverAddr)
+
+	// Check for observed address from the connection
+	for i := 0; i < 10; i++ { // Add a maximum retry limit
+		if observedAddr := conn.GetObservedAddress(); observedAddr != nil {
+			log.Printf("Observed address received: %s\n", observedAddr.String())
+			break
+		}
+	}
+
+	ln, err := tr.Listen(tlsConfig, quicConfig)
 	if err != nil {
 		log.Fatal("listen addr: ", err)
 	}
 	defer ln.Close()
 
-	log.Print("Start Server: 127.0.0.1:12345")
+	log.Print("Start Server: 127.0.0.1:1234")
 
 	for {
 		conn, err := ln.Accept(context.Background())
@@ -50,9 +95,9 @@ func main() {
 			for s.Scan() {
 				msg := s.Text()
 				log.Printf("Accept Message: `%s`", msg)
-				_, err := stream.Write([]byte(msg))
+				_, err := stream.Write([]byte("Hello from server\n"))
 				if err != nil {
-					log.Print("write: ", err)
+					log.Fatal("write: ", err)
 				}
 			}
 		}(stream)
