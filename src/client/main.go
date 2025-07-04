@@ -14,7 +14,7 @@ func main() {
 	// Configure TLS with certificate verification skipped
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: true,
-		NextProtos:         []string{"quic-example"},
+		NextProtos:         []string{"p2p-quic"},
 	}
 
 	addr := "127.0.0.1:12345"

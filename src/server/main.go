@@ -16,7 +16,10 @@ func main() {
 	flag.Parse()
 
 	cer, err := tls.LoadX509KeyPair(*cert, *key)
-	tlsConf := &tls.Config{Certificates: []tls.Certificate{cer}}
+	tlsConf := &tls.Config{
+		Certificates: []tls.Certificate{cer},
+		NextProtos:   []string{"p2p-quic"},
+	}
 	quicConf := &quic.Config{}
 
 	ln, err := quic.ListenAddr("127.0.0.1:12345", tlsConf, quicConf)
