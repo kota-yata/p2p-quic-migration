@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -24,8 +25,10 @@ func main() {
 		AddressDiscoveryMode: 1, // Request address observations
 	}
 
-	serverAddr := "127.0.0.1:12345"
-	udpAddr, err := net.ResolveUDPAddr("udp", serverAddr)
+	serverAddr := flag.String("serverAddr", "127.0.0.1:12345", "Address to bind to")
+	flag.Parse()
+
+	udpAddr, err := net.ResolveUDPAddr("udp", *serverAddr)
 
 	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: 1234, IP: net.IPv4zero})
 	tr := quic.Transport{
