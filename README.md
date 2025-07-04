@@ -1,2 +1,4 @@
 # p2p-quic-migration
-This is a poc project to handle network change during a peer-to-peer connection over QUIC.
+P2P QUIC with seamless connection migration.
+
+This project uses [a modified quic-go](https://github.com/kota-yata/quic-go).
