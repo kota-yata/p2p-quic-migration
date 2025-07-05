@@ -7,13 +7,16 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"log"
 	"net"
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/kota-yata/p2p-quic-migration/src/shared"
 )
+
 
 func main() {
 	key := flag.String("key", "server.key", "TLS key (requires -cert option)")
@@ -68,6 +71,35 @@ func main() {
 			log.Printf("Observed address received: %s\n", observedAddr.String())
 			break
 		}
+	}
+
+	// Request peer list from intermediate server
+	stream, err := conn.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to open stream to intermediate server: %v", err)
+	}
+	defer stream.Close()
+
+	// Send GET_PEERS request
+	if _, err = stream.Write([]byte("GET_PEERS")); err != nil {
+		log.Fatalf("Failed to send GET_PEERS request: %v", err)
+	}
+
+	// Read peer list response
+	buffer := make([]byte, 4096)
+	n, err := stream.Read(buffer)
+	if err != nil {
+		log.Fatalf("Failed to read peer list: %v", err)
+	}
+
+	var peers []shared.PeerInfo
+	if err := json.Unmarshal(buffer[:n], &peers); err != nil {
+		log.Fatalf("Failed to unmarshal peer list: %v", err)
+	}
+
+	log.Printf("Received %d peers from intermediate server:", len(peers))
+	for _, peer := range peers {
+		log.Printf("  Peer: %s (Address: %s)", peer.ID, peer.Address)
 	}
 
 	ln, err := tr.Listen(tlsConfig, quicConfig)
