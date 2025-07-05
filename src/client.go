@@ -17,76 +17,132 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
+const (
+	maxRetries             = 10
+	maxHolePunchAttempts   = 10
+	sessionTimeout         = 60 * time.Second
+	holePunchDelay         = 2 * time.Second
+	connectionTimeout      = 5 * time.Second
+	holePunchTimeout       = 2 * time.Second
+	communicationDuration  = 50 * time.Second
+	maxMessageExchanges    = 10
+)
+
+var clientConnectionEstablished = make(chan bool, 1)
+
 func main() {
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: true,
-		NextProtos:         []string{"p2p-quic"},
-	}
-
-	quicConfig := &quic.Config{
-		AddressDiscoveryMode: 1, // Request address observations
-	}
-
 	serverAddr := flag.String("serverAddr", "203.178.143.72:12345", "Address to the intermediary server")
 	flag.Parse()
 
-	serverAddrResolved, err := net.ResolveUDPAddr("udp", *serverAddr)
-	if err != nil {
-		log.Fatalf("Failed to resolve server address: %v", err)
+	client := &Client{
+		serverAddr: *serverAddr,
+		tlsConfig:  createTLSConfig(),
+		quicConfig: createQUICConfig(),
 	}
 
-	udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{Port: 1235, IP: net.IPv4zero})
-	if err != nil {
-		log.Fatalf("Failed to listen on UDP: %v", err)
+	if err := client.Run(); err != nil {
+		log.Fatalf("Client failed: %v", err)
 	}
-	defer udpConn.Close()
+}
 
-	tr := quic.Transport{
-		Conn: udpConn,
+type Client struct {
+	serverAddr string
+	tlsConfig  *tls.Config
+	quicConfig *quic.Config
+	transport  *quic.Transport
+	udpConn    *net.UDPConn
+}
+
+func createTLSConfig() *tls.Config {
+	return &tls.Config{
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"p2p-quic"},
 	}
-	// defer tr.Close()
+}
+
+func createQUICConfig() *quic.Config {
+	return &quic.Config{
+		AddressDiscoveryMode: 1,
+	}
+}
+
+func (c *Client) Run() error {
+	if err := c.setupTransport(); err != nil {
+		return fmt.Errorf("failed to setup transport: %v", err)
+	}
+	defer c.cleanup()
+
+	intermediateConn, err := c.connectToIntermediateServer()
+	if err != nil {
+		return fmt.Errorf("failed to connect to intermediate server: %v", err)
+	}
+	defer intermediateConn.CloseWithError(0, "")
+
+	c.waitForObservedAddress(intermediateConn)
+
+	go c.managePeerDiscovery(intermediateConn)
+
+	c.waitForSession()
+	return nil
+}
+
+func (c *Client) setupTransport() error {
+	var err error
+	c.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: 1235, IP: net.IPv4zero})
+	if err != nil {
+		return fmt.Errorf("failed to listen on UDP: %v", err)
+	}
+
+	c.transport = &quic.Transport{
+		Conn: c.udpConn,
+	}
+	return nil
+}
+
+func (c *Client) cleanup() {
+	if c.udpConn != nil {
+		c.udpConn.Close()
+	}
+}
+
+func (c *Client) connectToIntermediateServer() (*quic.Conn, error) {
+	serverAddrResolved, err := net.ResolveUDPAddr("udp", c.serverAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve server address: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := tr.Dial(ctx, serverAddrResolved, tlsConfig, quicConfig)
+	conn, err := c.transport.Dial(ctx, serverAddrResolved, c.tlsConfig, c.quicConfig)
 	if err != nil {
-		log.Fatalf("Failed to connect to intermediate server: %v", err)
+		return nil, fmt.Errorf("failed to connect to intermediate server: %v", err)
 	}
-	// defer conn.CloseWithError(0, "")
 
-	log.Printf("Connected to intermediate server at %s\n", *serverAddr)
+	log.Printf("Connected to intermediate server at %s", c.serverAddr)
+	return conn, nil
+}
 
-	// Check for observed address from the connection
-	for i := 0; i < 10; i++ { // Add a maximum retry limit
+func (c *Client) waitForObservedAddress(conn *quic.Conn) {
+	for i := 0; i < 10; i++ {
 		if observedAddr := conn.GetObservedAddress(); observedAddr != nil {
-			log.Printf("Observed address received: %s\n", observedAddr.String())
+			log.Printf("Observed address received: %s", observedAddr.String())
 			break
 		}
 	}
+}
 
-	// Create a channel to communicate discovered peers
-	peerChannel := make(chan string, 1)
-
-	// Start background goroutine for bidirectional communication with intermediate server
-	go manageIntermediateServerCommunication(conn, peerChannel, &tr, tlsConfig, quicConfig)
-
-	// Wait for a peer to be discovered and automatically connect
+func (c *Client) waitForSession() {
 	log.Println("Waiting for peer discovery...")
-
-	// Keep the client running to maintain the connection
 	select {
-	case <-time.After(60 * time.Second):
+	case <-time.After(sessionTimeout):
 		log.Println("Client session timeout after 60 seconds")
 	case <-context.Background().Done():
 		log.Println("Context cancelled")
 	}
 }
 
-var clientConnectionEstablished = make(chan bool, 1)
-
-func manageIntermediateServerCommunication(conn *quic.Conn, peerChannel chan string, tr *quic.Transport, tlsConfig *tls.Config, quicConfig *quic.Config) {
-	// Open a single bidirectional stream for all communication
+func (c *Client) managePeerDiscovery(conn *quic.Conn) {
 	stream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
 		log.Printf("Failed to open communication stream: %v", err)
@@ -94,16 +150,35 @@ func manageIntermediateServerCommunication(conn *quic.Conn, peerChannel chan str
 	}
 	defer stream.Close()
 
-	// Send GET_PEERS request first
-	if _, err = stream.Write([]byte("GET_PEERS")); err != nil {
-		log.Printf("Failed to send GET_PEERS request: %v", err)
+	if err := c.sendPeerRequest(stream); err != nil {
+		log.Printf("Failed to send peer request: %v", err)
 		return
 	}
 
-	// Continuously read from the stream (peer list first, then notifications)
+	peerManager := &PeerManager{
+		client:        c,
+		hasConnected:  false,
+		isFirstMessage: true,
+	}
+
+	peerManager.handlePeerCommunication(stream)
+}
+
+func (c *Client) sendPeerRequest(stream *quic.Stream) error {
+	if _, err := stream.Write([]byte("GET_PEERS")); err != nil {
+		return fmt.Errorf("failed to send GET_PEERS request: %v", err)
+	}
+	return nil
+}
+
+type PeerManager struct {
+	client         *Client
+	hasConnected   bool
+	isFirstMessage bool
+}
+
+func (pm *PeerManager) handlePeerCommunication(stream *quic.Stream) {
 	buffer := make([]byte, 4096)
-	isFirstMessage := true
-	hasConnectedToPeer := false
 
 	for {
 		n, err := stream.Read(buffer)
@@ -112,153 +187,171 @@ func manageIntermediateServerCommunication(conn *quic.Conn, peerChannel chan str
 			return
 		}
 
-		if isFirstMessage {
-			// First message should be the peer list
-			var peers []shared.PeerInfo
-			if err := json.Unmarshal(buffer[:n], &peers); err != nil {
-				log.Printf("Failed to unmarshal peer list: %v", err)
-				return
-			}
-
-			log.Printf("Received %d peers from intermediate server:", len(peers))
-			for _, peer := range peers {
-				log.Printf("  Peer: %s (Address: %s)", peer.ID, peer.Address)
-				// Attempt NAT hole punching to each peer first
-				go attemptNATHolePunch(*tr, peer.Address, tlsConfig, quicConfig, clientConnectionEstablished)
-			}
-
-			// If we have at least one peer and haven't connected yet, connect to the first one
-			if len(peers) > 0 && !hasConnectedToPeer {
-				// Wait a moment for hole punching to take effect, then try to connect
-				go func() {
-					time.Sleep(2 * time.Second) // Give hole punching time to work
-					connectToPeer(peers[0].Address, tr, tlsConfig, quicConfig)
-				}()
-				hasConnectedToPeer = true
-			}
-			isFirstMessage = false
+		if pm.isFirstMessage {
+			pm.handleInitialPeerList(buffer[:n])
+			pm.isFirstMessage = false
 		} else {
-			// Subsequent messages should be notifications
-			var notification shared.PeerNotification
-			if err := json.Unmarshal(buffer[:n], &notification); err != nil {
-				log.Printf("Failed to unmarshal peer notification: %v", err)
-				continue
-			}
-
-			log.Printf("Received peer notification - Type: %s, Peer: %s (Address: %s)",
-				notification.Type, notification.Peer.ID, notification.Peer.Address)
-
-			// If this is a new peer, attempt NAT hole punching first
-			if notification.Type == "NEW_PEER" {
-				go attemptNATHolePunch(*tr, notification.Peer.Address, tlsConfig, quicConfig, clientConnectionEstablished)
-
-				// If we haven't connected yet, try to connect to this new peer
-				if !hasConnectedToPeer {
-					go func() {
-						time.Sleep(2 * time.Second) // Give hole punching time to work
-						connectToPeer(notification.Peer.Address, tr, tlsConfig, quicConfig)
-					}()
-					hasConnectedToPeer = true
-				}
-			}
+			pm.handlePeerNotification(buffer[:n])
 		}
 	}
 }
 
+func (pm *PeerManager) handleInitialPeerList(data []byte) {
+	var peers []shared.PeerInfo
+	if err := json.Unmarshal(data, &peers); err != nil {
+		log.Printf("Failed to unmarshal peer list: %v", err)
+		return
+	}
+
+	log.Printf("Received %d peers from intermediate server:", len(peers))
+	for _, peer := range peers {
+		log.Printf("  Peer: %s (Address: %s)", peer.ID, peer.Address)
+		go attemptNATHolePunch(*pm.client.transport, peer.Address, pm.client.tlsConfig, pm.client.quicConfig, clientConnectionEstablished)
+	}
+
+	if len(peers) > 0 && !pm.hasConnected {
+		pm.connectToPeerWithDelay(peers[0].Address)
+	}
+}
+
+func (pm *PeerManager) handlePeerNotification(data []byte) {
+	var notification shared.PeerNotification
+	if err := json.Unmarshal(data, &notification); err != nil {
+		log.Printf("Failed to unmarshal peer notification: %v", err)
+		return
+	}
+
+	log.Printf("Received peer notification - Type: %s, Peer: %s (Address: %s)",
+		notification.Type, notification.Peer.ID, notification.Peer.Address)
+
+	if notification.Type == "NEW_PEER" {
+		go attemptNATHolePunch(*pm.client.transport, notification.Peer.Address, pm.client.tlsConfig, pm.client.quicConfig, clientConnectionEstablished)
+
+		if !pm.hasConnected {
+			pm.connectToPeerWithDelay(notification.Peer.Address)
+		}
+	}
+}
+
+func (pm *PeerManager) connectToPeerWithDelay(peerAddr string) {
+	go func() {
+		time.Sleep(holePunchDelay)
+		connectToPeer(peerAddr, pm.client.transport, pm.client.tlsConfig, pm.client.quicConfig)
+	}()
+	pm.hasConnected = true
+}
+
 func connectToPeer(peerAddr string, tr *quic.Transport, tlsConfig *tls.Config, quicConfig *quic.Config) {
-	const maxRetries = 10
+	conn, err := establishConnection(peerAddr, tr, tlsConfig, quicConfig)
+	if err != nil {
+		log.Printf("Failed to establish connection to peer %s: %v", peerAddr, err)
+		return
+	}
+	defer conn.CloseWithError(0, "")
+
+	signalConnectionEstablished()
+
+	if err := handlePeerCommunication(conn, peerAddr); err != nil {
+		log.Printf("Peer communication failed: %v", err)
+	}
+}
+
+func establishConnection(peerAddr string, tr *quic.Transport, tlsConfig *tls.Config, quicConfig *quic.Config) (*quic.Conn, error) {
 	log.Printf("Attempting to connect to peer at %s (will retry up to %d times)", peerAddr, maxRetries)
 
 	peerAddrResolved, err := net.ResolveUDPAddr("udp", peerAddr)
 	if err != nil {
-		log.Printf("Failed to resolve peer address %s: %v", peerAddr, err)
-		return
+		return nil, fmt.Errorf("failed to resolve peer address %s: %v", peerAddr, err)
 	}
 
-	var peerConn *quic.Conn
+	var conn *quic.Conn
 	var lastErr error
 
-	// Retry connection attempts up to maxRetries times
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		log.Printf("Connection attempt %d/%d to peer %s", attempt, maxRetries, peerAddr)
 
-		// Create a new context for each attempt with reasonable timeout
-		peerCtx, peerCancel := context.WithTimeout(context.Background(), 5*time.Second)
-
-		peerConn, err = tr.Dial(peerCtx, peerAddrResolved, tlsConfig, quicConfig)
-		peerCancel() // Clean up context
+		ctx, cancel := context.WithTimeout(context.Background(), connectionTimeout)
+		conn, err = tr.Dial(ctx, peerAddrResolved, tlsConfig, quicConfig)
+		cancel()
 
 		if err == nil {
-			// Connection successful!
 			log.Printf("Successfully connected to peer %s on attempt %d", peerAddr, attempt)
-			break
+			return conn, nil
 		}
 
 		lastErr = err
 		log.Printf("Connection attempt %d/%d to peer %s failed: %v", attempt, maxRetries, peerAddr, err)
 
-		// If this wasn't the last attempt, wait before retrying
 		if attempt < maxRetries {
-			// Exponential backoff: 1s, 2s, 4s, 8s, 16s, then cap at 30s
-			backoffDuration := time.Duration(1<<uint(attempt-1)) * time.Second
-			if backoffDuration > 30*time.Second {
-				backoffDuration = 30 * time.Second
-			}
+			backoffDuration := calculateBackoff(attempt)
 			log.Printf("Waiting %v before retry attempt %d", backoffDuration, attempt+1)
 			time.Sleep(backoffDuration)
 		}
 	}
 
-	// Check if all attempts failed
-	if peerConn == nil {
-		log.Printf("All %d connection attempts to peer %s failed. Last error: %v", maxRetries, peerAddr, lastErr)
-		return
-	}
+	return nil, fmt.Errorf("all %d connection attempts failed. Last error: %v", maxRetries, lastErr)
+}
 
-	// Connection successful - signal to stop hole punching
+func calculateBackoff(attempt int) time.Duration {
+	backoffDuration := time.Duration(1<<uint(attempt-1)) * time.Second
+	if backoffDuration > 30*time.Second {
+		backoffDuration = 30 * time.Second
+	}
+	return backoffDuration
+}
+
+func signalConnectionEstablished() {
 	select {
 	case clientConnectionEstablished <- true:
 		log.Printf("Connection established - signaling to stop hole punching")
 	default:
 		// Channel already has a value, which is fine
 	}
+}
 
-	// Connection successful - proceed with communication
-	defer peerConn.CloseWithError(0, "")
-
-	peerStream, err := peerConn.OpenStreamSync(context.Background())
+func handlePeerCommunication(conn *quic.Conn, peerAddr string) error {
+	stream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
-		log.Printf("Failed to open stream to peer %s after successful connection: %v", peerAddr, err)
-		return
+		return fmt.Errorf("failed to open stream to peer %s: %v", peerAddr, err)
 	}
-	defer peerStream.Close()
+	defer stream.Close()
 
-	if _, err = peerStream.Write([]byte("Hello from client\n")); err != nil {
-		log.Printf("Failed to write to peer %s: %v", peerAddr, err)
-		return
+	if err := sendInitialMessage(stream, peerAddr); err != nil {
+		return err
 	}
 
+	if err := readInitialResponse(stream, peerAddr); err != nil {
+		return err
+	}
+
+	go maintainPeerCommunication(stream, peerAddr)
+
+	log.Printf("Starting continuous communication with peer %s", peerAddr)
+	time.Sleep(communicationDuration)
+	log.Printf("Peer connection to %s completed successfully!", peerAddr)
+
+	return nil
+}
+
+func sendInitialMessage(stream *quic.Stream, peerAddr string) error {
+	if _, err := stream.Write([]byte("Hello from client\n")); err != nil {
+		return fmt.Errorf("failed to write to peer %s: %v", peerAddr, err)
+	}
+	return nil
+}
+
+func readInitialResponse(stream *quic.Stream, peerAddr string) error {
 	response := make([]byte, 1024)
-	n, err := peerStream.Read(response)
+	n, err := stream.Read(response)
 	if err != nil {
-		log.Printf("Failed to read from peer %s: %v", peerAddr, err)
-		return
+		return fmt.Errorf("failed to read from peer %s: %v", peerAddr, err)
 	}
 
 	log.Printf("Received from peer %s: %s", peerAddr, string(response[:n]))
-
-	// Start continuous data exchange
-	go maintainPeerCommunication(peerStream, peerAddr)
-
-	// Keep the connection alive for ongoing communication
-	log.Printf("Starting continuous communication with peer %s", peerAddr)
-	time.Sleep(50 * time.Second) // Keep connection alive
-
-	log.Printf("Peer connection to %s completed successfully!", peerAddr)
+	return nil
 }
 
 func attemptNATHolePunch(tr quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan bool) {
-	const maxHolePunchAttempts = 10
 	log.Printf("Client starting NAT hole punching to peer: %s (will attempt %d times)", peerAddr, maxHolePunchAttempts)
 
 	peerAddrResolved, err := net.ResolveUDPAddr("udp", peerAddr)
@@ -267,9 +360,7 @@ func attemptNATHolePunch(tr quic.Transport, peerAddr string, tlsConfig *tls.Conf
 		return
 	}
 
-	// Perform multiple hole punching attempts
 	for attempt := 1; attempt <= maxHolePunchAttempts; attempt++ {
-		// Check if connection has been established
 		select {
 		case <-stopChan:
 			log.Printf("Stopping client NAT hole punch to %s - connection established", peerAddr)
@@ -277,40 +368,39 @@ func attemptNATHolePunch(tr quic.Transport, peerAddr string, tlsConfig *tls.Conf
 		default:
 		}
 
-		log.Printf("Client NAT hole punch attempt %d/%d to peer %s", attempt, maxHolePunchAttempts, peerAddr)
+		performHolePunchAttempt(tr, peerAddrResolved, tlsConfig, quicConfig, peerAddr, attempt)
 
-		// Use a short timeout for each hole punching attempt
-		ctx, _ := context.WithTimeout(context.Background(), 2*time.Second)
-
-		// Attempt to dial the peer - this will initiate NAT hole punching
-		// The connection doesn't need to succeed, just the attempt helps with NAT traversal
-		conn, err := tr.Dial(ctx, peerAddrResolved, tlsConfig, quicConfig)
-
-		// Clean up resources
-		// cancel()
-
-		if err != nil {
-			// This is expected to fail in most cases - that's okay for NAT hole punching
-			log.Printf("Client NAT hole punch attempt %d/%d to %s completed (connection failed, which is normal): %v", attempt, maxHolePunchAttempts, peerAddr, err)
-		} else {
-			// If connection somehow succeeds, close it immediately since this is just for hole punching
-			conn.CloseWithError(0, "NAT hole punch complete")
-			log.Printf("Client NAT hole punch attempt %d/%d to %s succeeded (unexpected but good!)", attempt, maxHolePunchAttempts, peerAddr)
-		}
-
-		// If this wasn't the last attempt, wait before retrying
 		if attempt < maxHolePunchAttempts {
-			// Short backoff between hole punch attempts (1s, 2s, 3s, 4s, 5s, then 5s for remaining)
-			backoffDuration := time.Duration(attempt) * time.Second
-			if backoffDuration > 5*time.Second {
-				backoffDuration = 5 * time.Second
-			}
-			log.Printf("Client waiting %v before next hole punch attempt %d", backoffDuration, attempt+1)
-			time.Sleep(backoffDuration)
+			waitBeforeNextAttempt(attempt)
 		}
 	}
 
 	log.Printf("Client completed all %d NAT hole punch attempts to peer %s", maxHolePunchAttempts, peerAddr)
+}
+
+func performHolePunchAttempt(tr quic.Transport, peerAddrResolved *net.UDPAddr, tlsConfig *tls.Config, quicConfig *quic.Config, peerAddr string, attempt int) {
+	log.Printf("Client NAT hole punch attempt %d/%d to peer %s", attempt, maxHolePunchAttempts, peerAddr)
+
+	ctx, cancel := context.WithTimeout(context.Background(), holePunchTimeout)
+	defer cancel()
+
+	conn, err := tr.Dial(ctx, peerAddrResolved, tlsConfig, quicConfig)
+
+	if err != nil {
+		log.Printf("Client NAT hole punch attempt %d/%d to %s completed (connection failed, which is normal): %v", attempt, maxHolePunchAttempts, peerAddr, err)
+	} else {
+		conn.CloseWithError(0, "NAT hole punch complete")
+		log.Printf("Client NAT hole punch attempt %d/%d to %s succeeded (unexpected but good!)", attempt, maxHolePunchAttempts, peerAddr)
+	}
+}
+
+func waitBeforeNextAttempt(attempt int) {
+	backoffDuration := time.Duration(attempt) * time.Second
+	if backoffDuration > 5*time.Second {
+		backoffDuration = 5 * time.Second
+	}
+	log.Printf("Client waiting %v before next hole punch attempt %d", backoffDuration, attempt+1)
+	time.Sleep(backoffDuration)
 }
 
 func maintainPeerCommunication(stream *quic.Stream, peerAddr string) {
@@ -327,7 +417,6 @@ func maintainPeerCommunication(stream *quic.Stream, peerAddr string) {
 			return
 		}
 
-		// Read response
 		response := make([]byte, 1024)
 		n, err := stream.Read(response)
 		if err != nil {
@@ -337,7 +426,7 @@ func maintainPeerCommunication(stream *quic.Stream, peerAddr string) {
 
 		log.Printf("Peer %s responded: %s", peerAddr, string(response[:n]))
 
-		if counter >= 10 {
+		if counter >= maxMessageExchanges {
 			log.Printf("Completed %d message exchanges with peer %s", counter, peerAddr)
 			return
 		}
