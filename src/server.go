@@ -100,6 +100,8 @@ func main() {
 	}
 }
 
+var connectionEstablished = make(chan bool, 1)
+
 func manageIntermediateServerCommunication(tr *quic.Transport, conn *quic.Conn, tlsConfig *tls.Config, quicConfig *quic.Config) {
 	// Open a single bidirectional stream for all communication
 	stream, err := conn.OpenStreamSync(context.Background())
@@ -138,7 +140,7 @@ func manageIntermediateServerCommunication(tr *quic.Transport, conn *quic.Conn, 
 			for _, peer := range peers {
 				log.Printf("  Peer: %s (Address: %s)", peer.ID, peer.Address)
 				// Attempt NAT hole punching by dialing each peer
-				go attemptNATHolePunch(tr, peer.Address, tlsConfig, quicConfig)
+				go attemptNATHolePunch(tr, peer.Address, tlsConfig, quicConfig, connectionEstablished)
 			}
 			isFirstMessage = false
 		} else {
@@ -154,13 +156,13 @@ func manageIntermediateServerCommunication(tr *quic.Transport, conn *quic.Conn, 
 
 			// If this is a new peer, attempt NAT hole punching
 			if notification.Type == "NEW_PEER" {
-				go attemptNATHolePunch(tr, notification.Peer.Address, tlsConfig, quicConfig)
+				go attemptNATHolePunch(tr, notification.Peer.Address, tlsConfig, quicConfig, connectionEstablished)
 			}
 		}
 	}
 }
 
-func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config) {
+func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan bool) {
 	const maxHolePunchAttempts = 10
 	log.Printf("Starting NAT hole punching to peer: %s (will attempt %d times)", peerAddr, maxHolePunchAttempts)
 
@@ -172,6 +174,14 @@ func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Con
 
 	// Perform multiple hole punching attempts
 	for attempt := 1; attempt <= maxHolePunchAttempts; attempt++ {
+		// Check if connection has been established
+		select {
+		case <-stopChan:
+			log.Printf("Stopping NAT hole punch to %s - connection established", peerAddr)
+			return
+		default:
+		}
+
 		log.Printf("NAT hole punch attempt %d/%d to peer %s", attempt, maxHolePunchAttempts, peerAddr)
 
 		// Create a short-lived UDP connection for each hole punching attempt
@@ -219,7 +229,15 @@ func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Con
 func handlePeerCommunication(stream *quic.Stream, conn *quic.Conn) {
 	defer stream.Close()
 	log.Printf("Starting peer communication session")
-	
+
+	// Signal that connection is established
+	select {
+	case connectionEstablished <- true:
+		log.Printf("Connection established - signaling to stop hole punching")
+	default:
+		// Channel already has a value, which is fine
+	}
+
 	buffer := make([]byte, 4096)
 	for {
 		n, err := stream.Read(buffer)
@@ -227,23 +245,23 @@ func handlePeerCommunication(stream *quic.Stream, conn *quic.Conn) {
 			log.Printf("Peer communication ended: %v", err)
 			return
 		}
-		
+
 		msg := string(buffer[:n])
 		log.Printf("Received from peer: %s", msg)
-		
+
 		// Echo back with server identifier
 		response := "Server echo: " + msg
 		if _, err := stream.Write([]byte(response)); err != nil {
 			log.Printf("Failed to write response: %v", err)
 			return
 		}
-		
+
 		// Send periodic messages to keep connection alive
 		go func() {
 			ticker := time.NewTicker(5 * time.Second)
 			defer ticker.Stop()
 			counter := 0
-			
+
 			for range ticker.C {
 				counter++
 				periodic := fmt.Sprintf("Server periodic message #%d\n", counter)
@@ -251,7 +269,7 @@ func handlePeerCommunication(stream *quic.Stream, conn *quic.Conn) {
 					log.Printf("Failed to send periodic message: %v", err)
 					return
 				}
-				if counter >= 10 { // Stop after 10 messages
+				if counter >= 10 {
 					return
 				}
 			}

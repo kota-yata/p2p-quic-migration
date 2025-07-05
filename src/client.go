@@ -83,6 +83,8 @@ func main() {
 	}
 }
 
+var clientConnectionEstablished = make(chan bool, 1)
+
 func manageIntermediateServerCommunication(conn *quic.Conn, peerChannel chan string, tr *quic.Transport, tlsConfig *tls.Config, quicConfig *quic.Config) {
 	// Open a single bidirectional stream for all communication
 	stream, err := conn.OpenStreamSync(context.Background())
@@ -122,7 +124,7 @@ func manageIntermediateServerCommunication(conn *quic.Conn, peerChannel chan str
 			for _, peer := range peers {
 				log.Printf("  Peer: %s (Address: %s)", peer.ID, peer.Address)
 				// Attempt NAT hole punching to each peer first
-				go attemptNATHolePunch(*tr, peer.Address, tlsConfig, quicConfig)
+				go attemptNATHolePunch(*tr, peer.Address, tlsConfig, quicConfig, clientConnectionEstablished)
 			}
 
 			// If we have at least one peer and haven't connected yet, connect to the first one
@@ -148,7 +150,7 @@ func manageIntermediateServerCommunication(conn *quic.Conn, peerChannel chan str
 
 			// If this is a new peer, attempt NAT hole punching first
 			if notification.Type == "NEW_PEER" {
-				go attemptNATHolePunch(*tr, notification.Peer.Address, tlsConfig, quicConfig)
+				go attemptNATHolePunch(*tr, notification.Peer.Address, tlsConfig, quicConfig, clientConnectionEstablished)
 
 				// If we haven't connected yet, try to connect to this new peer
 				if !hasConnectedToPeer {
@@ -213,6 +215,14 @@ func connectToPeer(peerAddr string, tr *quic.Transport, tlsConfig *tls.Config, q
 		return
 	}
 
+	// Connection successful - signal to stop hole punching
+	select {
+	case clientConnectionEstablished <- true:
+		log.Printf("Connection established - signaling to stop hole punching")
+	default:
+		// Channel already has a value, which is fine
+	}
+
 	// Connection successful - proceed with communication
 	defer peerConn.CloseWithError(0, "")
 
@@ -236,18 +246,18 @@ func connectToPeer(peerAddr string, tr *quic.Transport, tlsConfig *tls.Config, q
 	}
 
 	log.Printf("Received from peer %s: %s", peerAddr, string(response[:n]))
-	
+
 	// Start continuous data exchange
 	go maintainPeerCommunication(peerStream, peerAddr)
-	
+
 	// Keep the connection alive for ongoing communication
 	log.Printf("Starting continuous communication with peer %s", peerAddr)
 	time.Sleep(50 * time.Second) // Keep connection alive
-	
+
 	log.Printf("Peer connection to %s completed successfully!", peerAddr)
 }
 
-func attemptNATHolePunch(tr quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config) {
+func attemptNATHolePunch(tr quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan bool) {
 	const maxHolePunchAttempts = 10
 	log.Printf("Client starting NAT hole punching to peer: %s (will attempt %d times)", peerAddr, maxHolePunchAttempts)
 
@@ -259,6 +269,14 @@ func attemptNATHolePunch(tr quic.Transport, peerAddr string, tlsConfig *tls.Conf
 
 	// Perform multiple hole punching attempts
 	for attempt := 1; attempt <= maxHolePunchAttempts; attempt++ {
+		// Check if connection has been established
+		select {
+		case <-stopChan:
+			log.Printf("Stopping client NAT hole punch to %s - connection established", peerAddr)
+			return
+		default:
+		}
+
 		log.Printf("Client NAT hole punch attempt %d/%d to peer %s", attempt, maxHolePunchAttempts, peerAddr)
 
 		// Use a short timeout for each hole punching attempt
@@ -299,16 +317,16 @@ func maintainPeerCommunication(stream *quic.Stream, peerAddr string) {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 	counter := 0
-	
+
 	for range ticker.C {
 		counter++
 		message := fmt.Sprintf("Client message #%d to peer\n", counter)
-		
+
 		if _, err := stream.Write([]byte(message)); err != nil {
 			log.Printf("Failed to send message to peer %s: %v", peerAddr, err)
 			return
 		}
-		
+
 		// Read response
 		response := make([]byte, 1024)
 		n, err := stream.Read(response)
@@ -316,10 +334,10 @@ func maintainPeerCommunication(stream *quic.Stream, peerAddr string) {
 			log.Printf("Failed to read response from peer %s: %v", peerAddr, err)
 			return
 		}
-		
+
 		log.Printf("Peer %s responded: %s", peerAddr, string(response[:n]))
-		
-		if counter >= 15 { // Stop after 15 exchanges
+
+		if counter >= 10 {
 			log.Printf("Completed %d message exchanges with peer %s", counter, peerAddr)
 			return
 		}
