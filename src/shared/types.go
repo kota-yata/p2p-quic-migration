@@ -8,3 +8,8 @@ type PeerInfo struct {
 	ConnectedAt time.Time `json:"connected_at"`
 	LastSeen    time.Time `json:"last_seen"`
 }
+
+type PeerNotification struct {
+	Type string    `json:"type"`
+	Peer *PeerInfo `json:"peer"`
+}
