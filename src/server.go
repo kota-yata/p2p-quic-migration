@@ -73,34 +73,8 @@ func main() {
 		}
 	}
 
-	// Request peer list from intermediate server
-	stream, err := conn.OpenStreamSync(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to open stream to intermediate server: %v", err)
-	}
-	defer stream.Close()
-
-	// Send GET_PEERS request
-	if _, err = stream.Write([]byte("GET_PEERS")); err != nil {
-		log.Fatalf("Failed to send GET_PEERS request: %v", err)
-	}
-
-	// Read peer list response
-	buffer := make([]byte, 4096)
-	n, err := stream.Read(buffer)
-	if err != nil {
-		log.Fatalf("Failed to read peer list: %v", err)
-	}
-
-	var peers []shared.PeerInfo
-	if err := json.Unmarshal(buffer[:n], &peers); err != nil {
-		log.Fatalf("Failed to unmarshal peer list: %v", err)
-	}
-
-	log.Printf("Received %d peers from intermediate server:", len(peers))
-	for _, peer := range peers {
-		log.Printf("  Peer: %s (Address: %s)", peer.ID, peer.Address)
-	}
+	// Start background goroutine for bidirectional communication with intermediate server
+	go manageIntermediateServerCommunication(conn)
 
 	ln, err := tr.Listen(tlsConfig, quicConfig)
 	if err != nil {
@@ -135,3 +109,58 @@ func main() {
 		}(stream)
 	}
 }
+
+func manageIntermediateServerCommunication(conn *quic.Conn) {
+	// Open a single bidirectional stream for all communication
+	stream, err := conn.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Printf("Failed to open communication stream: %v", err)
+		return
+	}
+	defer stream.Close()
+
+	// Send GET_PEERS request first
+	if _, err = stream.Write([]byte("GET_PEERS")); err != nil {
+		log.Printf("Failed to send GET_PEERS request: %v", err)
+		return
+	}
+
+	// Continuously read from the stream (peer list first, then notifications)
+	buffer := make([]byte, 4096)
+	isFirstMessage := true
+	
+	for {
+		n, err := stream.Read(buffer)
+		if err != nil {
+			log.Printf("Failed to read from intermediate server: %v", err)
+			return
+		}
+
+		if isFirstMessage {
+			// First message should be the peer list
+			var peers []shared.PeerInfo
+			if err := json.Unmarshal(buffer[:n], &peers); err != nil {
+				log.Printf("Failed to unmarshal peer list: %v", err)
+				return
+			}
+
+			log.Printf("Received %d peers from intermediate server:", len(peers))
+			for _, peer := range peers {
+				log.Printf("  Peer: %s (Address: %s)", peer.ID, peer.Address)
+			}
+			isFirstMessage = false
+		} else {
+			// Subsequent messages should be notifications
+			var notification shared.PeerNotification
+			if err := json.Unmarshal(buffer[:n], &notification); err != nil {
+				log.Printf("Failed to unmarshal peer notification: %v", err)
+				continue
+			}
+
+			log.Printf("Received peer notification - Type: %s, Peer: %s (Address: %s)", 
+				notification.Type, notification.Peer.ID, notification.Peer.Address)
+		}
+	}
+}
+
+
