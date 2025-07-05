@@ -73,7 +73,7 @@ func main() {
 	}
 
 	// Start background goroutine for bidirectional communication with intermediate server
-	go manageIntermediateServerCommunication(conn)
+	go manageIntermediateServerCommunication(&tr, conn, tlsConfig, quicConfig)
 
 	ln, err := tr.Listen(tlsConfig, quicConfig)
 	if err != nil {
@@ -81,7 +81,7 @@ func main() {
 	}
 	defer ln.Close()
 
-	log.Print("Start Server: 127.0.0.1:1234")
+	log.Print("Start Server: 0.0.0.0:1234")
 
 	for {
 		conn, err := ln.Accept(context.Background())
@@ -109,7 +109,7 @@ func main() {
 	}
 }
 
-func manageIntermediateServerCommunication(conn *quic.Conn) {
+func manageIntermediateServerCommunication(tr *quic.Transport, conn *quic.Conn, tlsConfig *tls.Config, quicConfig *quic.Config) {
 	// Open a single bidirectional stream for all communication
 	stream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
@@ -146,6 +146,8 @@ func manageIntermediateServerCommunication(conn *quic.Conn) {
 			log.Printf("Received %d peers from intermediate server:", len(peers))
 			for _, peer := range peers {
 				log.Printf("  Peer: %s (Address: %s)", peer.ID, peer.Address)
+				// Attempt NAT hole punching by dialing each peer
+				go attemptNATHolePunch(tr, peer.Address, tlsConfig, quicConfig)
 			}
 			isFirstMessage = false
 		} else {
@@ -158,6 +160,67 @@ func manageIntermediateServerCommunication(conn *quic.Conn) {
 
 			log.Printf("Received peer notification - Type: %s, Peer: %s (Address: %s)",
 				notification.Type, notification.Peer.ID, notification.Peer.Address)
+
+			// If this is a new peer, attempt NAT hole punching
+			if notification.Type == "NEW_PEER" {
+				go attemptNATHolePunch(tr, notification.Peer.Address, tlsConfig, quicConfig)
+			}
 		}
 	}
+}
+
+func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config) {
+	const maxHolePunchAttempts = 10
+	log.Printf("Starting NAT hole punching to peer: %s (will attempt %d times)", peerAddr, maxHolePunchAttempts)
+
+	peerAddrResolved, err := net.ResolveUDPAddr("udp", peerAddr)
+	if err != nil {
+		log.Printf("Failed to resolve peer address %s for NAT hole punch: %v", peerAddr, err)
+		return
+	}
+
+	// Perform multiple hole punching attempts
+	for attempt := 1; attempt <= maxHolePunchAttempts; attempt++ {
+		log.Printf("NAT hole punch attempt %d/%d to peer %s", attempt, maxHolePunchAttempts, peerAddr)
+
+		// Create a short-lived UDP connection for each hole punching attempt
+		udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
+		if err != nil {
+			log.Printf("Failed to create UDP connection for NAT hole punch attempt %d to %s: %v", attempt, peerAddr, err)
+			continue
+		}
+
+		// Use a short timeout for each hole punching attempt
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+
+		// Attempt to dial the peer - this will initiate NAT hole punching
+		// The connection doesn't need to succeed, just the attempt helps with NAT traversal
+		conn, err := tr.Dial(ctx, peerAddrResolved, tlsConfig, quicConfig)
+
+		// Clean up resources
+		cancel()
+		udpConn.Close()
+
+		if err != nil {
+			// This is expected to fail in most cases - that's okay for NAT hole punching
+			log.Printf("NAT hole punch attempt %d/%d to %s completed (connection failed, which is normal): %v", attempt, maxHolePunchAttempts, peerAddr, err)
+		} else {
+			// If connection somehow succeeds, close it immediately since this is just for hole punching
+			conn.CloseWithError(0, "NAT hole punch complete")
+			log.Printf("NAT hole punch attempt %d/%d to %s succeeded (unexpected but good!)", attempt, maxHolePunchAttempts, peerAddr)
+		}
+
+		// If this wasn't the last attempt, wait before retrying
+		if attempt < maxHolePunchAttempts {
+			// Short backoff between hole punch attempts (1s, 2s, 3s, 4s, 5s, then 5s for remaining)
+			backoffDuration := time.Duration(attempt) * time.Second
+			if backoffDuration > 5*time.Second {
+				backoffDuration = 5 * time.Second
+			}
+			log.Printf("Waiting %v before next hole punch attempt %d", backoffDuration, attempt+1)
+			time.Sleep(backoffDuration)
+		}
+	}
+
+	log.Printf("Completed all %d NAT hole punch attempts to peer %s", maxHolePunchAttempts, peerAddr)
 }
