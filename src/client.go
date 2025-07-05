@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -13,7 +14,9 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/kota-yata/p2p-quic-migration/src/shared"
 )
+
 
 func main() {
 	tlsConfig := &tls.Config{
@@ -64,12 +67,40 @@ func main() {
 		}
 	}
 
+	// Request peer list from intermediate server
+	stream, err := conn.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Fatalf("Failed to open stream to intermediate server: %v", err)
+	}
+	defer stream.Close()
+
+	// Send GET_PEERS request
+	if _, err = stream.Write([]byte("GET_PEERS")); err != nil {
+		log.Fatalf("Failed to send GET_PEERS request: %v", err)
+	}
+
+	// Read peer list response
+	buffer := make([]byte, 4096)
+	n, err := stream.Read(buffer)
+	if err != nil {
+		log.Fatalf("Failed to read peer list: %v", err)
+	}
+
+	var peers []shared.PeerInfo
+	if err := json.Unmarshal(buffer[:n], &peers); err != nil {
+		log.Fatalf("Failed to unmarshal peer list: %v", err)
+	}
+
+	log.Printf("Received %d peers from intermediate server:", len(peers))
+	for _, peer := range peers {
+		log.Printf("  Peer: %s (Address: %s)", peer.ID, peer.Address)
+	}
+
 	peerAddrResolved, err := net.ResolveUDPAddr("udp", *peerAddr)
 	if err != nil {
 		log.Fatalf("Failed to resolve peer address: %v", err)
 	}
 
-	// Create a new context for peer connection
 	peerCtx, peerCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer peerCancel()
 
@@ -79,18 +110,18 @@ func main() {
 	}
 	log.Printf("Connected to peer at %s\n", *peerAddr)
 
-	stream, err := peerConn.OpenStreamSync(context.Background())
+	peerStream, err := peerConn.OpenStreamSync(context.Background())
 	if err != nil {
 		log.Fatalf("Failed to open stream to peer: %v", err)
 	}
-	defer stream.Close()
+	defer peerStream.Close()
 
-	if _, err = stream.Write([]byte("Hello from client\n")); err != nil {
+	if _, err = peerStream.Write([]byte("Hello from client\n")); err != nil {
 		log.Fatal("write: ", err)
 	}
 
 	response := make([]byte, 1024)
-	n, err := stream.Read(response)
+	n, err = peerStream.Read(response)
 	if err != nil {
 		log.Fatalf("Failed to read from stream: %v", err)
 	}
