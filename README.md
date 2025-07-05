@@ -4,7 +4,7 @@ P2P QUIC with seamless connection migration.
 This project uses [modified quic-go](https://github.com/kota-yata/quic-go). Put this repository and quic-go in the same directory hierarchy and it will work (If not, let me know).
 
 ## Development
-My boy Claude Code made a nice makefile.
+my man claude code has made some nice make commands:
 ```bash
 # Run client (peer)
 make client
