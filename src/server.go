@@ -4,11 +4,11 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"time"
@@ -91,21 +91,12 @@ func main() {
 
 		stream, err := conn.AcceptStream(context.Background())
 		if err != nil {
-			log.Fatal("accept stream: ", err)
+			log.Printf("Accept stream error: %v", err)
+			continue
 		}
 
 		log.Print("New Client Connection Accepted")
-		go func(stream *quic.Stream) {
-			s := bufio.NewScanner(stream)
-			for s.Scan() {
-				msg := s.Text()
-				log.Printf("Accept Message: `%s`", msg)
-				_, err := stream.Write([]byte("Hello from server\n"))
-				if err != nil {
-					log.Fatal("write: ", err)
-				}
-			}
-		}(stream)
+		go handlePeerCommunication(stream, conn)
 	}
 }
 
@@ -223,4 +214,47 @@ func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Con
 	}
 
 	log.Printf("Completed all %d NAT hole punch attempts to peer %s", maxHolePunchAttempts, peerAddr)
+}
+
+func handlePeerCommunication(stream *quic.Stream, conn *quic.Conn) {
+	defer stream.Close()
+	log.Printf("Starting peer communication session")
+	
+	buffer := make([]byte, 4096)
+	for {
+		n, err := stream.Read(buffer)
+		if err != nil {
+			log.Printf("Peer communication ended: %v", err)
+			return
+		}
+		
+		msg := string(buffer[:n])
+		log.Printf("Received from peer: %s", msg)
+		
+		// Echo back with server identifier
+		response := "Server echo: " + msg
+		if _, err := stream.Write([]byte(response)); err != nil {
+			log.Printf("Failed to write response: %v", err)
+			return
+		}
+		
+		// Send periodic messages to keep connection alive
+		go func() {
+			ticker := time.NewTicker(5 * time.Second)
+			defer ticker.Stop()
+			counter := 0
+			
+			for range ticker.C {
+				counter++
+				periodic := fmt.Sprintf("Server periodic message #%d\n", counter)
+				if _, err := stream.Write([]byte(periodic)); err != nil {
+					log.Printf("Failed to send periodic message: %v", err)
+					return
+				}
+				if counter >= 10 { // Stop after 10 messages
+					return
+				}
+			}
+		}()
+	}
 }

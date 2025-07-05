@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net"
 	"time"
@@ -73,9 +74,10 @@ func main() {
 	// Wait for a peer to be discovered and automatically connect
 	log.Println("Waiting for peer discovery...")
 
+	// Keep the client running to maintain the connection
 	select {
-	case <-time.After(30 * time.Second):
-		log.Fatal("Timeout waiting for peer discovery")
+	case <-time.After(60 * time.Second):
+		log.Println("Client session timeout after 60 seconds")
 	case <-context.Background().Done():
 		log.Println("Context cancelled")
 	}
@@ -234,6 +236,14 @@ func connectToPeer(peerAddr string, tr *quic.Transport, tlsConfig *tls.Config, q
 	}
 
 	log.Printf("Received from peer %s: %s", peerAddr, string(response[:n]))
+	
+	// Start continuous data exchange
+	go maintainPeerCommunication(peerStream, peerAddr)
+	
+	// Keep the connection alive for ongoing communication
+	log.Printf("Starting continuous communication with peer %s", peerAddr)
+	time.Sleep(50 * time.Second) // Keep connection alive
+	
 	log.Printf("Peer connection to %s completed successfully!", peerAddr)
 }
 
@@ -283,4 +293,35 @@ func attemptNATHolePunch(tr quic.Transport, peerAddr string, tlsConfig *tls.Conf
 	}
 
 	log.Printf("Client completed all %d NAT hole punch attempts to peer %s", maxHolePunchAttempts, peerAddr)
+}
+
+func maintainPeerCommunication(stream *quic.Stream, peerAddr string) {
+	ticker := time.NewTicker(3 * time.Second)
+	defer ticker.Stop()
+	counter := 0
+	
+	for range ticker.C {
+		counter++
+		message := fmt.Sprintf("Client message #%d to peer\n", counter)
+		
+		if _, err := stream.Write([]byte(message)); err != nil {
+			log.Printf("Failed to send message to peer %s: %v", peerAddr, err)
+			return
+		}
+		
+		// Read response
+		response := make([]byte, 1024)
+		n, err := stream.Read(response)
+		if err != nil {
+			log.Printf("Failed to read response from peer %s: %v", peerAddr, err)
+			return
+		}
+		
+		log.Printf("Peer %s responded: %s", peerAddr, string(response[:n]))
+		
+		if counter >= 15 { // Stop after 15 exchanges
+			log.Printf("Completed %d message exchanges with peer %s", counter, peerAddr)
+			return
+		}
+	}
 }
