@@ -15,23 +15,17 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/kota-yata/p2p-quic-migration/src/shared"
 )
-
-type PeerInfo struct {
-	ID          string    `json:"id"`
-	Address     string    `json:"address"`
-	ConnectedAt time.Time `json:"connected_at"`
-	LastSeen    time.Time `json:"last_seen"`
-}
 
 type PeerRegistry struct {
 	mu    sync.RWMutex
-	peers map[string]*PeerInfo
+	peers map[string]*shared.PeerInfo
 }
 
 func NewPeerRegistry() *PeerRegistry {
 	return &PeerRegistry{
-		peers: make(map[string]*PeerInfo),
+		peers: make(map[string]*shared.PeerInfo),
 	}
 }
 
@@ -40,7 +34,7 @@ func (pr *PeerRegistry) AddPeer(id string, addr net.Addr) {
 	defer pr.mu.Unlock()
 	
 	now := time.Now()
-	pr.peers[id] = &PeerInfo{
+	pr.peers[id] = &shared.PeerInfo{
 		ID:          id,
 		Address:     addr.String(),
 		ConnectedAt: now,
@@ -68,11 +62,11 @@ func (pr *PeerRegistry) UpdateLastSeen(id string) {
 	}
 }
 
-func (pr *PeerRegistry) GetPeers() []*PeerInfo {
+func (pr *PeerRegistry) GetPeers() []*shared.PeerInfo {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
 	
-	peers := make([]*PeerInfo, 0, len(pr.peers))
+	peers := make([]*shared.PeerInfo, 0, len(pr.peers))
 	for _, peer := range pr.peers {
 		peers = append(peers, peer)
 	}
