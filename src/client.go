@@ -27,7 +27,6 @@ func main() {
 	}
 
 	serverAddr := flag.String("serverAddr", "203.178.143.72:12345", "Address to the intermediary server")
-	peerAddr := flag.String("peerAddr", "127.0.0.1:1234", "Address of the peer to connect to")
 	flag.Parse()
 
 	serverAddrResolved, err := net.ResolveUDPAddr("udp", *serverAddr)
@@ -65,43 +64,24 @@ func main() {
 		}
 	}
 
+	// Create a channel to communicate discovered peers
+	peerChannel := make(chan string, 1)
+
 	// Start background goroutine for bidirectional communication with intermediate server
-	go manageIntermediateServerCommunication(conn)
+	go manageIntermediateServerCommunication(conn, peerChannel, &tr, tlsConfig, quicConfig)
 
-	peerAddrResolved, err := net.ResolveUDPAddr("udp", *peerAddr)
-	if err != nil {
-		log.Fatalf("Failed to resolve peer address: %v", err)
+	// Wait for a peer to be discovered and automatically connect
+	log.Println("Waiting for peer discovery...")
+	
+	select {
+	case <-time.After(30 * time.Second):
+		log.Fatal("Timeout waiting for peer discovery")
+	case <-context.Background().Done():
+		log.Println("Context cancelled")
 	}
-
-	peerCtx, peerCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer peerCancel()
-
-	peerConn, err := tr.Dial(peerCtx, peerAddrResolved, tlsConfig, quicConfig)
-	if err != nil {
-		log.Fatalf("Failed to connect to peer: %v", err)
-	}
-	log.Printf("Connected to peer at %s\n", *peerAddr)
-
-	peerStream, err := peerConn.OpenStreamSync(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to open stream to peer: %v", err)
-	}
-	defer peerStream.Close()
-
-	if _, err = peerStream.Write([]byte("Hello from client\n")); err != nil {
-		log.Fatal("write: ", err)
-	}
-
-	response := make([]byte, 1024)
-	n, err := peerStream.Read(response)
-	if err != nil {
-		log.Fatalf("Failed to read from stream: %v", err)
-	}
-
-	log.Printf("Received: %s\n", string(response[:n]))
 }
 
-func manageIntermediateServerCommunication(conn *quic.Conn) {
+func manageIntermediateServerCommunication(conn *quic.Conn, peerChannel chan string, tr *quic.Transport, tlsConfig *tls.Config, quicConfig *quic.Config) {
 	// Open a single bidirectional stream for all communication
 	stream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
@@ -119,6 +99,7 @@ func manageIntermediateServerCommunication(conn *quic.Conn) {
 	// Continuously read from the stream (peer list first, then notifications)
 	buffer := make([]byte, 4096)
 	isFirstMessage := true
+	hasConnectedToPeer := false
 
 	for {
 		n, err := stream.Read(buffer)
@@ -139,6 +120,12 @@ func manageIntermediateServerCommunication(conn *quic.Conn) {
 			for _, peer := range peers {
 				log.Printf("  Peer: %s (Address: %s)", peer.ID, peer.Address)
 			}
+
+			// If we have at least one peer and haven't connected yet, connect to the first one
+			if len(peers) > 0 && !hasConnectedToPeer {
+				go connectToPeer(peers[0].Address, tr, tlsConfig, quicConfig)
+				hasConnectedToPeer = true
+			}
 			isFirstMessage = false
 		} else {
 			// Subsequent messages should be notifications
@@ -150,6 +137,56 @@ func manageIntermediateServerCommunication(conn *quic.Conn) {
 
 			log.Printf("Received peer notification - Type: %s, Peer: %s (Address: %s)",
 				notification.Type, notification.Peer.ID, notification.Peer.Address)
+
+			// If this is a new peer notification and we haven't connected yet, connect to it
+			if notification.Type == "NEW_PEER" && !hasConnectedToPeer {
+				go connectToPeer(notification.Peer.Address, tr, tlsConfig, quicConfig)
+				hasConnectedToPeer = true
+			}
 		}
 	}
+}
+
+func connectToPeer(peerAddr string, tr *quic.Transport, tlsConfig *tls.Config, quicConfig *quic.Config) {
+	log.Printf("Attempting to connect to peer at %s", peerAddr)
+
+	peerAddrResolved, err := net.ResolveUDPAddr("udp", peerAddr)
+	if err != nil {
+		log.Printf("Failed to resolve peer address %s: %v", peerAddr, err)
+		return
+	}
+
+	// Create a new context for peer connection
+	peerCtx, peerCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer peerCancel()
+
+	peerConn, err := tr.Dial(peerCtx, peerAddrResolved, tlsConfig, quicConfig)
+	if err != nil {
+		log.Printf("Failed to connect to peer %s: %v", peerAddr, err)
+		return
+	}
+	defer peerConn.CloseWithError(0, "")
+
+	log.Printf("Successfully connected to peer at %s", peerAddr)
+
+	peerStream, err := peerConn.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Printf("Failed to open stream to peer %s: %v", peerAddr, err)
+		return
+	}
+	defer peerStream.Close()
+
+	if _, err = peerStream.Write([]byte("Hello from client\n")); err != nil {
+		log.Printf("Failed to write to peer %s: %v", peerAddr, err)
+		return
+	}
+
+	response := make([]byte, 1024)
+	n, err := peerStream.Read(response)
+	if err != nil {
+		log.Printf("Failed to read from peer %s: %v", peerAddr, err)
+		return
+	}
+
+	log.Printf("Received from peer %s: %s", peerAddr, string(response[:n]))
 }

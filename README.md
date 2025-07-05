@@ -1,7 +1,7 @@
 # p2p-quic-migration
 P2P QUIC with seamless connection migration.
 
-This project uses [modified quic-go](https://github.com/kota-yata/quic-go).
+This project uses [modified quic-go](https://github.com/kota-yata/quic-go). Put this repository and quic-go in the same directory hierarchy and it will work (If not, let me know).
 
 ## Building individual binaries
 ```bash
