@@ -18,21 +18,18 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-type PeerNotification struct {
-	Type string           `json:"type"`
-	Peer *shared.PeerInfo `json:"peer"`
-}
-
 type PeerRegistry struct {
-	mu          sync.RWMutex
-	peers       map[string]*shared.PeerInfo
-	connections map[string]*quic.Conn
+	mu                  sync.RWMutex
+	peers               map[string]*shared.PeerInfo
+	connections         map[string]*quic.Conn
+	notificationStreams map[string]*quic.Stream
 }
 
 func NewPeerRegistry() *PeerRegistry {
 	return &PeerRegistry{
-		peers:       make(map[string]*shared.PeerInfo),
-		connections: make(map[string]*quic.Conn),
+		peers:               make(map[string]*shared.PeerInfo),
+		connections:         make(map[string]*quic.Conn),
+		notificationStreams: make(map[string]*quic.Stream),
 	}
 }
 
@@ -62,6 +59,10 @@ func (pr *PeerRegistry) RemovePeer(id string) {
 	if _, exists := pr.peers[id]; exists {
 		delete(pr.peers, id)
 		delete(pr.connections, id)
+		if stream, exists := pr.notificationStreams[id]; exists {
+			stream.Close()
+			delete(pr.notificationStreams, id)
+		}
 		log.Printf("Removed peer %s", id)
 	}
 }
@@ -92,11 +93,18 @@ func (pr *PeerRegistry) GetPeerCount() int {
 	return len(pr.peers)
 }
 
+func (pr *PeerRegistry) AddNotificationStream(id string, stream *quic.Stream) {
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	pr.notificationStreams[id] = stream
+	log.Printf("Added notification stream for peer %s", id)
+}
+
 func (pr *PeerRegistry) notifyPeersAboutNewPeer(newPeerID string, newPeerInfo *shared.PeerInfo) {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
 
-	notification := PeerNotification{
+	notification := shared.PeerNotification{
 		Type: "NEW_PEER",
 		Peer: newPeerInfo,
 	}
@@ -107,27 +115,20 @@ func (pr *PeerRegistry) notifyPeersAboutNewPeer(newPeerID string, newPeerInfo *s
 		return
 	}
 
-	for peerID, conn := range pr.connections {
+	for peerID, stream := range pr.notificationStreams {
 		if peerID == newPeerID {
 			continue // Don't notify the new peer about itself
 		}
 
-		go func(peerID string, conn *quic.Conn) {
-			stream, err := conn.OpenStreamSync(context.Background())
-			if err != nil {
-				log.Printf("Failed to open stream for peer notification to %s: %v", peerID, err)
-				return
-			}
-			defer stream.Close()
-
-			_, err = stream.Write(notificationData)
+		go func(peerID string, stream *quic.Stream) {
+			_, err := stream.Write(notificationData)
 			if err != nil {
 				log.Printf("Failed to send peer notification to %s: %v", peerID, err)
 				return
 			}
 
 			log.Printf("Sent new peer notification to %s about %s", peerID, newPeerID)
-		}(peerID, conn)
+		}(peerID, stream)
 	}
 }
 
@@ -237,6 +238,23 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 				return
 			}
 			log.Printf("Sent peer list to %s: %d peers (excluding self)", conn.RemoteAddr(), len(peers))
+
+			// After sending peer list, register this stream for notifications
+			registry.AddNotificationStream(peerID, stream)
+			log.Printf("Peer %s registered for notifications on the same stream", peerID)
+			
+			// Keep the stream open by blocking here
+			// The stream will be used for sending notifications
+			select {} // Block forever until connection closes
+
+		case "LISTEN_NOTIFICATIONS":
+			// Legacy support for separate LISTEN_NOTIFICATIONS request
+			registry.AddNotificationStream(peerID, stream)
+			log.Printf("Peer %s started listening for notifications", peerID)
+
+			// Keep the stream open by blocking here
+			// The stream will be used for sending notifications
+			select {} // Block forever until connection closes
 
 		case "HEARTBEAT":
 			registry.UpdateLastSeen(peerID)
