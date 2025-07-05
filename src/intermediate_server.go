@@ -14,41 +14,54 @@ import (
 	"sync"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/kota-yata/p2p-quic-migration/src/shared"
+	"github.com/quic-go/quic-go"
 )
 
+type PeerNotification struct {
+	Type string           `json:"type"`
+	Peer *shared.PeerInfo `json:"peer"`
+}
+
 type PeerRegistry struct {
-	mu    sync.RWMutex
-	peers map[string]*shared.PeerInfo
+	mu          sync.RWMutex
+	peers       map[string]*shared.PeerInfo
+	connections map[string]*quic.Conn
 }
 
 func NewPeerRegistry() *PeerRegistry {
 	return &PeerRegistry{
-		peers: make(map[string]*shared.PeerInfo),
+		peers:       make(map[string]*shared.PeerInfo),
+		connections: make(map[string]*quic.Conn),
 	}
 }
 
-func (pr *PeerRegistry) AddPeer(id string, addr net.Addr) {
+func (pr *PeerRegistry) AddPeer(id string, addr net.Addr, conn *quic.Conn) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
-	
+
 	now := time.Now()
-	pr.peers[id] = &shared.PeerInfo{
+	peerInfo := &shared.PeerInfo{
 		ID:          id,
 		Address:     addr.String(),
 		ConnectedAt: now,
 		LastSeen:    now,
 	}
+	pr.peers[id] = peerInfo
+	pr.connections[id] = conn
 	log.Printf("Added peer %s with address %s", id, addr.String())
+
+	// Notify existing peers about the new peer
+	go pr.notifyPeersAboutNewPeer(id, peerInfo)
 }
 
 func (pr *PeerRegistry) RemovePeer(id string) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
-	
+
 	if _, exists := pr.peers[id]; exists {
 		delete(pr.peers, id)
+		delete(pr.connections, id)
 		log.Printf("Removed peer %s", id)
 	}
 }
@@ -56,7 +69,7 @@ func (pr *PeerRegistry) RemovePeer(id string) {
 func (pr *PeerRegistry) UpdateLastSeen(id string) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
-	
+
 	if peer, exists := pr.peers[id]; exists {
 		peer.LastSeen = time.Now()
 	}
@@ -65,7 +78,7 @@ func (pr *PeerRegistry) UpdateLastSeen(id string) {
 func (pr *PeerRegistry) GetPeers() []*shared.PeerInfo {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
-	
+
 	peers := make([]*shared.PeerInfo, 0, len(pr.peers))
 	for _, peer := range pr.peers {
 		peers = append(peers, peer)
@@ -77,6 +90,45 @@ func (pr *PeerRegistry) GetPeerCount() int {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
 	return len(pr.peers)
+}
+
+func (pr *PeerRegistry) notifyPeersAboutNewPeer(newPeerID string, newPeerInfo *shared.PeerInfo) {
+	pr.mu.RLock()
+	defer pr.mu.RUnlock()
+
+	notification := PeerNotification{
+		Type: "NEW_PEER",
+		Peer: newPeerInfo,
+	}
+
+	notificationData, err := json.Marshal(notification)
+	if err != nil {
+		log.Printf("Failed to marshal peer notification: %v", err)
+		return
+	}
+
+	for peerID, conn := range pr.connections {
+		if peerID == newPeerID {
+			continue // Don't notify the new peer about itself
+		}
+
+		go func(peerID string, conn *quic.Conn) {
+			stream, err := conn.OpenStreamSync(context.Background())
+			if err != nil {
+				log.Printf("Failed to open stream for peer notification to %s: %v", peerID, err)
+				return
+			}
+			defer stream.Close()
+
+			_, err = stream.Write(notificationData)
+			if err != nil {
+				log.Printf("Failed to send peer notification to %s: %v", peerID, err)
+				return
+			}
+
+			log.Printf("Sent new peer notification to %s about %s", peerID, newPeerID)
+		}(peerID, conn)
+	}
 }
 
 var registry *PeerRegistry
@@ -99,7 +151,6 @@ func main() {
 		NextProtos:   []string{"p2p-quic"},
 	}
 
-	// Configure QUIC to support address discovery
 	quicConf := &quic.Config{
 		// Set to mode 0: willing to provide address observations but not requesting them
 		AddressDiscoveryMode: 0,
@@ -125,8 +176,8 @@ func main() {
 
 func handleConnection(conn *quic.Conn) {
 	peerID := conn.RemoteAddr().String()
-	registry.AddPeer(peerID, conn.RemoteAddr())
-	
+	registry.AddPeer(peerID, conn.RemoteAddr(), conn)
+
 	defer func() {
 		registry.RemovePeer(peerID)
 		conn.CloseWithError(0, "")
@@ -165,20 +216,28 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 		// Handle different types of requests
 		switch message {
 		case "GET_PEERS":
-			peers := registry.GetPeers()
+			allPeers := registry.GetPeers()
+			// Filter out the requesting peer from the response
+			peers := make([]*shared.PeerInfo, 0, len(allPeers))
+			for _, peer := range allPeers {
+				if peer.ID != peerID {
+					peers = append(peers, peer)
+				}
+			}
+
 			response, err := json.Marshal(peers)
 			if err != nil {
 				log.Printf("Failed to marshal peers: %v", err)
 				continue
 			}
-			
+
 			_, err = stream.Write(response)
 			if err != nil {
 				log.Printf("Failed to write peers response: %v", err)
 				return
 			}
-			log.Printf("Sent peer list to %s: %d peers", conn.RemoteAddr(), len(peers))
-		
+			log.Printf("Sent peer list to %s: %d peers (excluding self)", conn.RemoteAddr(), len(peers))
+
 		case "HEARTBEAT":
 			registry.UpdateLastSeen(peerID)
 			_, err = stream.Write([]byte("HEARTBEAT_ACK"))
@@ -186,10 +245,10 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 				log.Printf("Failed to write heartbeat response: %v", err)
 				return
 			}
-			
+
 		default:
 			// For any other data, respond with observed address and peer count
-			response := fmt.Sprintf("Observed address: %s, Connected peers: %d", 
+			response := fmt.Sprintf("Observed address: %s, Connected peers: %d",
 				conn.RemoteAddr().String(), registry.GetPeerCount())
 			_, err = stream.Write([]byte(response))
 			if err != nil {
