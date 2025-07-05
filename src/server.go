@@ -13,10 +13,9 @@ import (
 	"net"
 	"time"
 
-	"github.com/quic-go/quic-go"
 	"github.com/kota-yata/p2p-quic-migration/src/shared"
+	"github.com/quic-go/quic-go"
 )
-
 
 func main() {
 	key := flag.String("key", "server.key", "TLS key (requires -cert option)")
@@ -128,11 +127,11 @@ func manageIntermediateServerCommunication(conn *quic.Conn) {
 	// Continuously read from the stream (peer list first, then notifications)
 	buffer := make([]byte, 4096)
 	isFirstMessage := true
-	
+
 	for {
 		n, err := stream.Read(buffer)
 		if err != nil {
-			log.Printf("Failed to read from intermediate server: %v", err)
+			log.Printf("Error reading from intermediate server: %v", err)
 			return
 		}
 
@@ -157,10 +156,8 @@ func manageIntermediateServerCommunication(conn *quic.Conn) {
 				continue
 			}
 
-			log.Printf("Received peer notification - Type: %s, Peer: %s (Address: %s)", 
+			log.Printf("Received peer notification - Type: %s, Peer: %s (Address: %s)",
 				notification.Type, notification.Peer.ID, notification.Peer.Address)
 		}
 	}
 }
-
-
