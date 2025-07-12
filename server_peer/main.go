@@ -71,7 +71,7 @@ func (s *Server) Run() error {
 	defer s.cleanup()
 
 	intermediateClient := intermediate.NewClient(s.config.serverAddr, s.tlsConfig, s.quicConfig, s.transport)
-	
+
 	intermediateConn, err := intermediateClient.ConnectToServer()
 	if err != nil {
 		return fmt.Errorf("failed to connect to intermediate server: %v", err)
@@ -128,8 +128,6 @@ func (s *Server) cleanup() {
 	}
 }
 
-
-
 func (s *Server) runPeerListener() error {
 	ln, err := s.transport.Listen(s.tlsConfig, s.quicConfig)
 	if err != nil {
@@ -153,6 +151,7 @@ func (s *Server) runPeerListener() error {
 }
 
 func (s *Server) handleIncomingConnection(conn *quic.Conn) {
+	log.Print("New Client Connection Accepted. Waiting for stream...")
 	stream, err := conn.AcceptStream(context.Background())
 	if err != nil {
 		log.Printf("Accept stream error: %v", err)
@@ -162,7 +161,6 @@ func (s *Server) handleIncomingConnection(conn *quic.Conn) {
 	log.Print("New Client Connection Accepted")
 	handlePeerCommunication(stream, conn)
 }
-
 
 func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan bool) {
 	log.Printf("Starting NAT hole punching to peer: %s (will attempt %d times)", peerAddr, maxHolePunchAttempts)

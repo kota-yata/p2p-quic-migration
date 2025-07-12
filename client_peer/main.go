@@ -239,19 +239,19 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 	if err != nil {
 		log.Printf("Client NAT hole punch attempt %d/%d to %s completed (connection failed, which is normal): %v", attempt, maxHolePunchAttempts, peerAddr, err)
 	} else {
-		log.Printf("Client NAT hole punch attempt %d/%d to %s succeeded - opening stream to server!", attempt, maxHolePunchAttempts, peerAddr)
+		log.Printf("Client NAT hole punch attempt %d/%d to %s succeeded - waiting for server to open stream!", attempt, maxHolePunchAttempts, peerAddr)
 
-		// Use this successful connection for video receiving - open stream to server
+		// Use this successful connection for video receiving - wait for server to open stream
 		go func() {
 			defer conn.CloseWithError(0, "")
 
-			stream, err := conn.OpenStreamSync(context.Background())
+			stream, err := conn.AcceptStream(context.Background())
 			if err != nil {
-				log.Printf("Failed to open stream to server: %v", err)
+				log.Printf("Failed to accept stream from server: %v", err)
 				return
 			}
 
-			log.Printf("Opened stream to server, starting to receive video stream from peer %s", peerAddr)
+			log.Printf("Accepted stream from server, starting to receive video stream from peer %s", peerAddr)
 
 			videoReceiver := NewVideoReceiver(stream)
 			if err := videoReceiver.ReceiveVideo(); err != nil {
