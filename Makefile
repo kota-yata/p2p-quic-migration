@@ -28,13 +28,13 @@ help:
 	@echo "  KEY_FILE          - Key file (default: $(KEY_FILE))"
 
 client: deps
-	go run -tags client ./src
+	cd client_peer && go run .
 
 server: deps cert
-	go run -tags server ./src -cert="$(CERT_FILE)" -key="$(KEY_FILE)"
+	cd server_peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
 
 intermediate: deps cert
-	go run -tags intermediate ./src -cert="$(CERT_FILE)" -key="$(KEY_FILE)"
+	cd intermediate && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
 
 cert:
 	@if [ ! -f "$(CERT_FILE)" ] || [ ! -f "$(KEY_FILE)" ]; then \
@@ -63,6 +63,6 @@ all: deps cert
 		attach-session
 
 build: deps
-	@go build -tags client -o client ./src
-	@go build -tags server -o server ./src  
-	@go build -tags intermediate -o intermediate_server ./src
+	@cd client_peer && go build -o ../client .
+	@cd server_peer && go build -o ../server .
+	@cd intermediate && go build -o ../intermediate_server .

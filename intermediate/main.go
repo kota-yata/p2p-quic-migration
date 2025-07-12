@@ -1,6 +1,3 @@
-//go:build intermediate
-// +build intermediate
-
 package main
 
 import (
@@ -14,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kota-yata/p2p-quic-migration/src/shared"
+	"github.com/kota-yata/p2p-quic-migration/shared"
 	"github.com/quic-go/quic-go"
 )
 

@@ -1,30 +1,22 @@
-//go:build server
-// +build server
-
 package main
 
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"time"
 
-	"github.com/kota-yata/p2p-quic-migration/src/shared"
+	"github.com/kota-yata/p2p-quic-migration/shared/intermediate"
 	"github.com/quic-go/quic-go"
 )
 
 const (
-	serverPort                = 1234
-	maxHolePunchAttempts      = 5
-	observedAddressMaxRetries = 10
-	intermediateConnTimeout   = 10 * time.Second
-	holePunchTimeout          = 2 * time.Second
-	periodicMessageInterval   = 5 * time.Second
-	maxPeriodicMessages       = 10
+	serverPort           = 1234
+	maxHolePunchAttempts = 5
+	holePunchTimeout     = 2 * time.Second
 )
 
 var connectionEstablished = make(chan bool, 1)
@@ -78,15 +70,18 @@ func (s *Server) Run() error {
 	}
 	defer s.cleanup()
 
-	intermediateConn, err := s.connectToIntermediateServer()
+	intermediateClient := intermediate.NewClient(s.config.serverAddr, s.tlsConfig, s.quicConfig, s.transport)
+	
+	intermediateConn, err := intermediateClient.ConnectToServer()
 	if err != nil {
 		return fmt.Errorf("failed to connect to intermediate server: %v", err)
 	}
 	defer intermediateConn.CloseWithError(0, "")
 
-	s.waitForObservedAddress(intermediateConn)
+	intermediateClient.WaitForObservedAddress(intermediateConn)
 
-	go s.managePeerDiscovery(intermediateConn)
+	peerHandler := NewServerPeerHandler(s.transport, s.tlsConfig, s.quicConfig)
+	go intermediateClient.ManagePeerDiscovery(intermediateConn, peerHandler)
 
 	return s.runPeerListener()
 }
@@ -133,60 +128,7 @@ func (s *Server) cleanup() {
 	}
 }
 
-func (s *Server) connectToIntermediateServer() (*quic.Conn, error) {
-	udpAddr, err := net.ResolveUDPAddr("udp", s.config.serverAddr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve server address: %v", err)
-	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), intermediateConnTimeout)
-	defer cancel()
-
-	conn, err := s.transport.Dial(ctx, udpAddr, s.tlsConfig, s.quicConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to intermediate server: %v", err)
-	}
-
-	log.Printf("Connected to intermediate server at %s", s.config.serverAddr)
-	return conn, nil
-}
-
-func (s *Server) waitForObservedAddress(conn *quic.Conn) {
-	for i := 0; i < observedAddressMaxRetries; i++ {
-		if observedAddr := conn.GetObservedAddress(); observedAddr != nil {
-			log.Printf("Observed address received: %s", observedAddr.String())
-			break
-		}
-	}
-}
-
-func (s *Server) managePeerDiscovery(conn *quic.Conn) {
-	stream, err := conn.OpenStreamSync(context.Background())
-	if err != nil {
-		log.Printf("Failed to open communication stream: %v", err)
-		return
-	}
-	defer stream.Close()
-
-	if err := s.sendPeerRequest(stream); err != nil {
-		log.Printf("Failed to send peer request: %v", err)
-		return
-	}
-
-	peerManager := &PeerManager{
-		server:         s,
-		isFirstMessage: true,
-	}
-
-	peerManager.handlePeerCommunication(stream)
-}
-
-func (s *Server) sendPeerRequest(stream *quic.Stream) error {
-	if _, err := stream.Write([]byte("GET_PEERS")); err != nil {
-		return fmt.Errorf("failed to send GET_PEERS request: %v", err)
-	}
-	return nil
-}
 
 func (s *Server) runPeerListener() error {
 	ln, err := s.transport.Listen(s.tlsConfig, s.quicConfig)
@@ -221,62 +163,6 @@ func (s *Server) handleIncomingConnection(conn *quic.Conn) {
 	handlePeerCommunication(stream, conn)
 }
 
-type PeerManager struct {
-	server         *Server
-	isFirstMessage bool
-}
-
-func (pm *PeerManager) handlePeerCommunication(stream *quic.Stream) {
-	buffer := make([]byte, 4096)
-
-	for {
-		n, err := stream.Read(buffer)
-		if err != nil {
-			log.Printf("Error reading from intermediate server: %v", err)
-			return
-		}
-
-		if pm.isFirstMessage {
-			pm.handleInitialPeerList(buffer[:n])
-			pm.isFirstMessage = false
-		} else {
-			pm.handlePeerNotification(buffer[:n])
-		}
-	}
-}
-
-func (pm *PeerManager) handleInitialPeerList(data []byte) {
-	var peers []shared.PeerInfo
-	if err := json.Unmarshal(data, &peers); err != nil {
-		log.Printf("Failed to unmarshal peer list: %v", err)
-		return
-	}
-
-	log.Printf("Received %d peers from intermediate server:", len(peers))
-	for _, peer := range peers {
-		log.Printf("  Peer: %s (Address: %s)", peer.ID, peer.Address)
-		pm.startHolePunching(peer.Address)
-	}
-}
-
-func (pm *PeerManager) handlePeerNotification(data []byte) {
-	var notification shared.PeerNotification
-	if err := json.Unmarshal(data, &notification); err != nil {
-		log.Printf("Failed to unmarshal peer notification: %v", err)
-		return
-	}
-
-	log.Printf("Received peer notification - Type: %s, Peer: %s (Address: %s)",
-		notification.Type, notification.Peer.ID, notification.Peer.Address)
-
-	if notification.Type == "NEW_PEER" {
-		pm.startHolePunching(notification.Peer.Address)
-	}
-}
-
-func (pm *PeerManager) startHolePunching(peerAddr string) {
-	go attemptNATHolePunch(pm.server.transport, peerAddr, pm.server.tlsConfig, pm.server.quicConfig, connectionEstablished)
-}
 
 func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan bool) {
 	log.Printf("Starting NAT hole punching to peer: %s (will attempt %d times)", peerAddr, maxHolePunchAttempts)
