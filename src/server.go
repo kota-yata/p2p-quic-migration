@@ -298,7 +298,10 @@ func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Con
 		}
 
 		if attempt < maxHolePunchAttempts {
-			waitBeforeNextHolePunch(attempt)
+			if waitBeforeNextHolePunch(attempt, stopChan) {
+				log.Printf("Stopping server NAT hole punch to %s during wait - connection established", peerAddr)
+				return
+			}
 		}
 	}
 
@@ -329,13 +332,19 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 	return nil
 }
 
-func waitBeforeNextHolePunch(attempt int) {
+func waitBeforeNextHolePunch(attempt int, stopChan chan bool) bool {
 	backoffDuration := time.Duration(attempt) * time.Second
 	if backoffDuration > 5*time.Second {
 		backoffDuration = 5 * time.Second
 	}
 	log.Printf("Waiting %v before next hole punch attempt %d", backoffDuration, attempt+1)
-	time.Sleep(backoffDuration)
+	
+	select {
+	case <-stopChan:
+		return true // Signal to stop
+	case <-time.After(backoffDuration):
+		return false // Continue with next attempt
+	}
 }
 
 func handlePeerCommunication(stream *quic.Stream, conn *quic.Conn) {
