@@ -29,6 +29,7 @@ const (
 )
 
 var clientConnectionEstablished = make(chan bool, 1)
+var holePunchCompleted = make(chan bool, 1)
 
 func main() {
 	serverAddr := flag.String("serverAddr", "203.178.143.72:12345", "Address to the intermediary server")
@@ -206,7 +207,7 @@ func (pm *PeerManager) handleInitialPeerList(data []byte) {
 	log.Printf("Received %d peers from intermediate server:", len(peers))
 	for _, peer := range peers {
 		log.Printf("  Peer: %s (Address: %s)", peer.ID, peer.Address)
-		go attemptNATHolePunch(*pm.client.transport, peer.Address, pm.client.tlsConfig, pm.client.quicConfig, clientConnectionEstablished)
+		go attemptNATHolePunch(*pm.client.transport, peer.Address, pm.client.tlsConfig, pm.client.quicConfig, holePunchCompleted)
 	}
 
 	if len(peers) > 0 && !pm.hasConnected {
@@ -225,7 +226,7 @@ func (pm *PeerManager) handlePeerNotification(data []byte) {
 		notification.Type, notification.Peer.ID, notification.Peer.Address)
 
 	if notification.Type == "NEW_PEER" {
-		go attemptNATHolePunch(*pm.client.transport, notification.Peer.Address, pm.client.tlsConfig, pm.client.quicConfig, clientConnectionEstablished)
+		go attemptNATHolePunch(*pm.client.transport, notification.Peer.Address, pm.client.tlsConfig, pm.client.quicConfig, holePunchCompleted)
 
 		if !pm.hasConnected {
 			pm.connectToPeerWithDelay(notification.Peer.Address)
@@ -235,8 +236,15 @@ func (pm *PeerManager) handlePeerNotification(data []byte) {
 
 func (pm *PeerManager) connectToPeerWithDelay(peerAddr string) {
 	go func() {
-		time.Sleep(holePunchDelay)
-		connectToPeer(peerAddr, pm.client.transport, pm.client.tlsConfig, pm.client.quicConfig)
+		// Wait for hole punching to complete successfully
+		select {
+		case <-holePunchCompleted:
+			log.Printf("Hole punching completed, now attempting real connection to %s", peerAddr)
+			connectToPeer(peerAddr, pm.client.transport, pm.client.tlsConfig, pm.client.quicConfig)
+		case <-time.After(30 * time.Second):
+			log.Printf("Timeout waiting for hole punching completion, attempting connection anyway to %s", peerAddr)
+			connectToPeer(peerAddr, pm.client.transport, pm.client.tlsConfig, pm.client.quicConfig)
+		}
 	}()
 	pm.hasConnected = true
 }
@@ -368,6 +376,14 @@ func performHolePunchAttempt(tr quic.Transport, peerAddrResolved *net.UDPAddr, t
 	} else {
 		conn.CloseWithError(0, "NAT hole punch complete")
 		log.Printf("Client NAT hole punch attempt %d/%d to %s succeeded (unexpected but good!)", attempt, maxHolePunchAttempts, peerAddr)
+		
+		// Signal that hole punching completed successfully
+		select {
+		case holePunchCompleted <- true:
+			log.Printf("Signaled hole punch completion for %s", peerAddr)
+		default:
+			// Channel already has a value, which is fine
+		}
 	}
 }
 
