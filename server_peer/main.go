@@ -151,14 +151,15 @@ func (s *Server) runPeerListener() error {
 }
 
 func (s *Server) handleIncomingConnection(conn *quic.Conn) {
-	log.Print("New Client Connection Accepted. Waiting for stream...")
-	stream, err := conn.AcceptStream(context.Background())
+	log.Print("New Client Connection Accepted. Opening stream for video streaming...")
+	
+	stream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
-		log.Printf("Accept stream error: %v", err)
+		log.Printf("Failed to open stream for video streaming: %v", err)
 		return
 	}
 
-	log.Print("New Client Connection Accepted")
+	log.Print("Stream opened, starting video streaming to client")
 	handlePeerCommunication(stream, conn)
 }
 
@@ -213,18 +214,15 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 		return nil
 	}
 
-	log.Printf("NAT hole punch attempt %d/%d to %s succeeded - using connection for video streaming!", attempt, maxHolePunchAttempts, peerAddr)
+	log.Printf("NAT hole punch attempt %d/%d to %s succeeded - keeping connection alive for potential incoming streams", attempt, maxHolePunchAttempts, peerAddr)
 
-	// Use this successful connection for video streaming
-	stream, err := conn.OpenStreamSync(context.Background())
-	if err != nil {
-		log.Printf("Failed to open stream on successful hole punch connection: %v", err)
-		conn.CloseWithError(0, "Failed to open stream")
-		return nil
-	}
-
-	// Start video streaming on this connection
-	go handlePeerCommunication(stream, conn)
+	// Keep this connection alive but don't use it for streaming
+	// The client will connect to our listener instead
+	go func() {
+		defer conn.CloseWithError(0, "Hole punch connection closed")
+		// Keep the connection alive for a while
+		time.Sleep(30 * time.Second)
+	}()
 
 	return nil
 }
@@ -262,11 +260,11 @@ type PeerCommunicator struct {
 }
 
 func (pc *PeerCommunicator) handleMessages() {
-	log.Printf("Starting video stream to peer")
+	log.Printf("Starting audio stream to peer")
 
-	videoStreamer := NewVideoStreamer(pc.stream)
-	if err := videoStreamer.StreamVideo(); err != nil {
-		log.Printf("Video streaming failed: %v", err)
+	audioStreamer := NewAudioStreamer(pc.stream)
+	if err := audioStreamer.StreamAudio(); err != nil {
+		log.Printf("Audio streaming failed: %v", err)
 		return
 	}
 }

@@ -9,21 +9,24 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-type VideoStreamer struct {
+type AudioStreamer struct {
 	stream *quic.Stream
 }
 
-func NewVideoStreamer(stream *quic.Stream) *VideoStreamer {
-	return &VideoStreamer{
+func NewAudioStreamer(stream *quic.Stream) *AudioStreamer {
+	return &AudioStreamer{
 		stream: stream,
 	}
 }
 
-func (vs *VideoStreamer) StreamVideo() error {
+func (as *AudioStreamer) StreamAudio() error {
 	cmd := exec.Command("gst-launch-1.0", 
-		"filesrc", "location=output.mp4", "!",
-		"qtdemux", "!",
-		"h264parse", "!",
+		"filesrc", "location=../output.mp3", "!",
+		"mpegaudioparse", "!",
+		"mad", "!",
+		"audioconvert", "!",
+		"audioresample", "!",
+		"audio/x-raw,rate=44100,channels=2", "!",
 		"fdsink", "fd=1")
 
 	stdout, err := cmd.StdoutPipe()
@@ -31,32 +34,66 @@ func (vs *VideoStreamer) StreamVideo() error {
 		return fmt.Errorf("failed to create stdout pipe: %v", err)
 	}
 
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("failed to create stderr pipe: %v", err)
+	}
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start gstreamer: %v", err)
 	}
 
-	log.Printf("GStreamer pipeline started, streaming video data...")
+	// Read stderr in background to capture any error messages
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := stderr.Read(buf)
+			if err != nil {
+				break
+			}
+			if n > 0 {
+				log.Printf("GStreamer stderr: %s", string(buf[:n]))
+			}
+		}
+	}()
 
-	buffer := make([]byte, 32768)
+	log.Printf("GStreamer audio pipeline started, streaming audio data...")
+
+	buffer := make([]byte, 4096) // Smaller buffer for audio streaming
+	totalBytesSent := int64(0)
+	
 	for {
 		n, err := stdout.Read(buffer)
 		if err != nil {
 			if err == io.EOF {
-				log.Printf("Video stream completed")
+				log.Printf("Audio stream completed. Total bytes sent: %d", totalBytesSent)
 				break
 			}
 			return fmt.Errorf("failed to read from gstreamer: %v", err)
 		}
 
-		if _, err := vs.stream.Write(buffer[:n]); err != nil {
-			return fmt.Errorf("failed to write video data to stream: %v", err)
+		if n > 0 {
+			written, err := as.stream.Write(buffer[:n])
+			if err != nil {
+				return fmt.Errorf("failed to write audio data to stream after %d bytes: %v", totalBytesSent, err)
+			}
+			totalBytesSent += int64(written)
+			
+			if totalBytesSent%262144 == 0 { // Log every 256KB for audio
+				log.Printf("Sent %.1f MB of audio data", float64(totalBytesSent)/1048576)
+			}
 		}
+	}
+
+	// Ensure all data is flushed before closing
+	if err := as.stream.Close(); err != nil {
+		log.Printf("Error closing stream: %v", err)
 	}
 
 	if err := cmd.Wait(); err != nil {
 		log.Printf("GStreamer process ended with error: %v", err)
 	}
 
-	log.Printf("Video streaming completed successfully")
+	log.Printf("Audio streaming completed successfully. Total bytes sent: %d", totalBytesSent)
 	return nil
 }

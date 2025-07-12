@@ -190,14 +190,14 @@ func handlePeerCommunication(conn *quic.Conn, peerAddr string) error {
 	}
 	defer stream.Close()
 
-	log.Printf("Starting to receive video stream from peer %s", peerAddr)
+	log.Printf("Starting to receive audio stream from peer %s", peerAddr)
 
-	videoReceiver := NewVideoReceiver(stream)
-	if err := videoReceiver.ReceiveVideo(); err != nil {
-		return fmt.Errorf("failed to receive video stream: %v", err)
+	audioReceiver := NewAudioReceiver(stream)
+	if err := audioReceiver.ReceiveAudio(); err != nil {
+		return fmt.Errorf("failed to receive audio stream: %v", err)
 	}
 
-	log.Printf("Video reception from %s completed successfully!", peerAddr)
+	log.Printf("Audio reception from %s completed successfully!", peerAddr)
 	return nil
 }
 
@@ -251,15 +251,15 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 				return
 			}
 
-			log.Printf("Accepted stream from server, starting to receive video stream from peer %s", peerAddr)
+			log.Printf("Accepted stream from server, starting to receive audio stream from peer %s", peerAddr)
 
-			videoReceiver := NewVideoReceiver(stream)
-			if err := videoReceiver.ReceiveVideo(); err != nil {
-				log.Printf("Failed to receive video stream: %v", err)
+			audioReceiver := NewAudioReceiver(stream)
+			if err := audioReceiver.ReceiveAudio(); err != nil {
+				log.Printf("Failed to receive audio stream: %v", err)
 				return
 			}
 
-			log.Printf("Video reception from %s completed successfully!", peerAddr)
+			log.Printf("Audio reception from %s completed successfully!", peerAddr)
 		}()
 
 		// Signal that hole punching completed successfully
