@@ -235,17 +235,8 @@ func (pm *PeerManager) handlePeerNotification(data []byte) {
 }
 
 func (pm *PeerManager) connectToPeerWithDelay(peerAddr string) {
-	go func() {
-		// Wait for hole punching to complete successfully
-		select {
-		case <-holePunchCompleted:
-			log.Printf("Hole punching completed, now attempting real connection to %s", peerAddr)
-			connectToPeer(peerAddr, pm.client.transport, pm.client.tlsConfig, pm.client.quicConfig)
-		case <-time.After(30 * time.Second):
-			log.Printf("Timeout waiting for hole punching completion, attempting connection anyway to %s", peerAddr)
-			connectToPeer(peerAddr, pm.client.transport, pm.client.tlsConfig, pm.client.quicConfig)
-		}
-	}()
+	// No longer needed - hole punching will handle the connection directly
+	log.Printf("Connection will be established during hole punching to %s", peerAddr)
 	pm.hasConnected = true
 }
 
@@ -374,8 +365,29 @@ func performHolePunchAttempt(tr quic.Transport, peerAddrResolved *net.UDPAddr, t
 	if err != nil {
 		log.Printf("Client NAT hole punch attempt %d/%d to %s completed (connection failed, which is normal): %v", attempt, maxHolePunchAttempts, peerAddr, err)
 	} else {
-		conn.CloseWithError(0, "NAT hole punch complete")
-		log.Printf("Client NAT hole punch attempt %d/%d to %s succeeded (unexpected but good!)", attempt, maxHolePunchAttempts, peerAddr)
+		log.Printf("Client NAT hole punch attempt %d/%d to %s succeeded - using connection for video receiving!", attempt, maxHolePunchAttempts, peerAddr)
+		
+		// Use this successful connection for video receiving
+		stream, err := conn.AcceptStream(context.Background())
+		if err != nil {
+			log.Printf("Failed to accept stream on successful hole punch connection: %v", err)
+			conn.CloseWithError(0, "Failed to accept stream")
+			return
+		}
+		
+		// Start video receiving on this connection
+		go func() {
+			defer conn.CloseWithError(0, "")
+			log.Printf("Starting to receive video stream from peer %s", peerAddr)
+			
+			videoReceiver := NewVideoReceiver(stream)
+			if err := videoReceiver.ReceiveVideo(); err != nil {
+				log.Printf("Failed to receive video stream: %v", err)
+				return
+			}
+			
+			log.Printf("Video reception from %s completed successfully!", peerAddr)
+		}()
 		
 		// Signal that hole punching completed successfully
 		select {

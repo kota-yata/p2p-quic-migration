@@ -327,8 +327,19 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 		return nil
 	}
 
-	conn.CloseWithError(0, "NAT hole punch complete")
-	log.Printf("NAT hole punch attempt %d/%d to %s succeeded (unexpected but good!)", attempt, maxHolePunchAttempts, peerAddr)
+	log.Printf("NAT hole punch attempt %d/%d to %s succeeded - using connection for video streaming!", attempt, maxHolePunchAttempts, peerAddr)
+	
+	// Use this successful connection for video streaming
+	stream, err := conn.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Printf("Failed to open stream on successful hole punch connection: %v", err)
+		conn.CloseWithError(0, "Failed to open stream")
+		return nil
+	}
+	
+	// Start video streaming on this connection
+	go handlePeerCommunication(stream, conn)
+	
 	return nil
 }
 
