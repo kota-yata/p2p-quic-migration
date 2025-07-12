@@ -316,40 +316,17 @@ func handlePeerCommunication(conn *quic.Conn, peerAddr string) error {
 	}
 	defer stream.Close()
 
-	if err := sendInitialMessage(stream, peerAddr); err != nil {
-		return err
+	log.Printf("Starting to receive video stream from peer %s", peerAddr)
+	
+	videoReceiver := NewVideoReceiver(stream)
+	if err := videoReceiver.ReceiveVideo(); err != nil {
+		return fmt.Errorf("failed to receive video stream: %v", err)
 	}
 
-	if err := readInitialResponse(stream, peerAddr); err != nil {
-		return err
-	}
-
-	go maintainPeerCommunication(stream, peerAddr)
-
-	log.Printf("Starting continuous communication with peer %s", peerAddr)
-	time.Sleep(communicationDuration)
-	log.Printf("Peer connection to %s completed successfully!", peerAddr)
-
+	log.Printf("Video reception from %s completed successfully!", peerAddr)
 	return nil
 }
 
-func sendInitialMessage(stream *quic.Stream, peerAddr string) error {
-	if _, err := stream.Write([]byte("Hello from client\n")); err != nil {
-		return fmt.Errorf("failed to write to peer %s: %v", peerAddr, err)
-	}
-	return nil
-}
-
-func readInitialResponse(stream *quic.Stream, peerAddr string) error {
-	response := make([]byte, 1024)
-	n, err := stream.Read(response)
-	if err != nil {
-		return fmt.Errorf("failed to read from peer %s: %v", peerAddr, err)
-	}
-
-	log.Printf("Received from peer %s: %s", peerAddr, string(response[:n]))
-	return nil
-}
 
 func attemptNATHolePunch(tr quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan bool) {
 	log.Printf("Client starting NAT hole punching to peer: %s (will attempt %d times)", peerAddr, maxHolePunchAttempts)
@@ -403,32 +380,3 @@ func waitBeforeNextAttempt(attempt int) {
 	time.Sleep(backoffDuration)
 }
 
-func maintainPeerCommunication(stream *quic.Stream, peerAddr string) {
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-	counter := 0
-
-	for range ticker.C {
-		counter++
-		message := fmt.Sprintf("Client message #%d to peer\n", counter)
-
-		if _, err := stream.Write([]byte(message)); err != nil {
-			log.Printf("Failed to send message to peer %s: %v", peerAddr, err)
-			return
-		}
-
-		response := make([]byte, 1024)
-		n, err := stream.Read(response)
-		if err != nil {
-			log.Printf("Failed to read response from peer %s: %v", peerAddr, err)
-			return
-		}
-
-		log.Printf("Peer %s responded: %s", peerAddr, string(response[:n]))
-
-		if counter >= maxMessageExchanges {
-			log.Printf("Completed %d message exchanges with peer %s", counter, peerAddr)
-			return
-		}
-	}
-}

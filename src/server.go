@@ -19,7 +19,7 @@ import (
 
 const (
 	serverPort                = 1234
-	maxHolePunchAttempts      = 10
+	maxHolePunchAttempts      = 5
 	observedAddressMaxRetries = 10
 	intermediateConnTimeout   = 10 * time.Second
 	holePunchTimeout          = 2 * time.Second
@@ -367,79 +367,13 @@ type PeerCommunicator struct {
 }
 
 func (pc *PeerCommunicator) handleMessages() {
-	buffer := make([]byte, 4096)
-	periodicSender := pc.startPeriodicSender()
-	defer periodicSender.stop()
-
-	for {
-		n, err := pc.stream.Read(buffer)
-		if err != nil {
-			log.Printf("Peer communication ended: %v", err)
-			return
-		}
-
-		msg := string(buffer[:n])
-		log.Printf("Received from peer: %s", msg)
-
-		if err := pc.sendResponse(msg); err != nil {
-			log.Printf("Failed to send response: %v", err)
-			return
-		}
+	log.Printf("Starting video stream to peer")
+	
+	videoStreamer := NewVideoStreamer(pc.stream)
+	if err := videoStreamer.StreamVideo(); err != nil {
+		log.Printf("Video streaming failed: %v", err)
+		return
 	}
 }
 
-func (pc *PeerCommunicator) sendResponse(msg string) error {
-	response := "Server echo: " + msg
-	if _, err := pc.stream.Write([]byte(response)); err != nil {
-		return fmt.Errorf("failed to write response: %v", err)
-	}
-	return nil
-}
 
-func (pc *PeerCommunicator) startPeriodicSender() *PeriodicSender {
-	sender := &PeriodicSender{
-		stream: pc.stream,
-		ticker: time.NewTicker(periodicMessageInterval),
-		stopCh: make(chan bool),
-	}
-
-	go sender.run()
-	return sender
-}
-
-type PeriodicSender struct {
-	stream  *quic.Stream
-	ticker  *time.Ticker
-	stopCh  chan bool
-	counter int
-}
-
-func (ps *PeriodicSender) run() {
-	defer ps.ticker.Stop()
-
-	for {
-		select {
-		case <-ps.ticker.C:
-			ps.counter++
-			if ps.counter > maxPeriodicMessages {
-				return
-			}
-
-			periodic := fmt.Sprintf("Server periodic message #%d\n", ps.counter)
-			if _, err := ps.stream.Write([]byte(periodic)); err != nil {
-				log.Printf("Failed to send periodic message: %v", err)
-				return
-			}
-
-		case <-ps.stopCh:
-			return
-		}
-	}
-}
-
-func (ps *PeriodicSender) stop() {
-	select {
-	case ps.stopCh <- true:
-	default:
-	}
-}
