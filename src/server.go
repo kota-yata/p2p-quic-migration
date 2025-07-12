@@ -203,6 +203,8 @@ func (s *Server) runPeerListener() error {
 			log.Printf("Accept error: %v", err)
 			continue
 		}
+		// stop the hole punching attempts here
+		connectionEstablished <- true
 
 		go s.handleIncomingConnection(conn)
 	}
@@ -328,7 +330,7 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 	}
 
 	log.Printf("NAT hole punch attempt %d/%d to %s succeeded - using connection for video streaming!", attempt, maxHolePunchAttempts, peerAddr)
-	
+
 	// Use this successful connection for video streaming
 	stream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
@@ -336,10 +338,10 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 		conn.CloseWithError(0, "Failed to open stream")
 		return nil
 	}
-	
+
 	// Start video streaming on this connection
 	go handlePeerCommunication(stream, conn)
-	
+
 	return nil
 }
 
@@ -349,7 +351,7 @@ func waitBeforeNextHolePunch(attempt int, stopChan chan bool) bool {
 		backoffDuration = 5 * time.Second
 	}
 	log.Printf("Waiting %v before next hole punch attempt %d", backoffDuration, attempt+1)
-	
+
 	select {
 	case <-stopChan:
 		return true // Signal to stop
@@ -362,23 +364,12 @@ func handlePeerCommunication(stream *quic.Stream, conn *quic.Conn) {
 	defer stream.Close()
 	log.Printf("Starting peer communication session")
 
-	signalConnectionEstablished()
-
 	communicator := &PeerCommunicator{
 		stream: stream,
 		conn:   conn,
 	}
 
 	communicator.handleMessages()
-}
-
-func signalConnectionEstablished() {
-	select {
-	case connectionEstablished <- true:
-		log.Printf("Connection established - signaling to stop hole punching")
-	default:
-		// Channel already has a value, which is fine
-	}
 }
 
 type PeerCommunicator struct {
@@ -388,12 +379,10 @@ type PeerCommunicator struct {
 
 func (pc *PeerCommunicator) handleMessages() {
 	log.Printf("Starting video stream to peer")
-	
+
 	videoStreamer := NewVideoStreamer(pc.stream)
 	if err := videoStreamer.StreamVideo(); err != nil {
 		log.Printf("Video streaming failed: %v", err)
 		return
 	}
 }
-
-
