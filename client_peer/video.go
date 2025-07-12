@@ -26,6 +26,7 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 	cmd := exec.Command("gst-launch-1.0",
 		"fdsrc", "fd=0", "!",
 		"audio/x-raw,rate=44100,channels=2,format=S16LE", "!",
+		"queue", "!",
 		"audioconvert", "!",
 		"audioresample", "!",
 		"autoaudiosink")

@@ -22,12 +22,12 @@ func NewAudioStreamer(stream *quic.Stream) *AudioStreamer {
 func (as *AudioStreamer) StreamAudio() error {
 	cmd := exec.Command("gst-launch-1.0", 
 		"filesrc", "location=../output.mp3", "!",
-		"mpegaudioparse", "!",
-		"mad", "!",
+		"decodebin", "!",
 		"audioconvert", "!",
 		"audioresample", "!",
-		"audio/x-raw,rate=44100,channels=2", "!",
-		"fdsink", "fd=1")
+		"audio/x-raw,rate=44100,channels=2,format=S16LE", "!",
+		"queue", "max-size-time=1000000000", "!",
+		"fdsink", "fd=1", "sync=false")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -61,16 +61,21 @@ func (as *AudioStreamer) StreamAudio() error {
 
 	buffer := make([]byte, 4096) // Smaller buffer for audio streaming
 	totalBytesSent := int64(0)
+	readCount := 0
 	
 	for {
 		n, err := stdout.Read(buffer)
+		readCount++
+		
 		if err != nil {
 			if err == io.EOF {
-				log.Printf("Audio stream completed. Total bytes sent: %d", totalBytesSent)
+				log.Printf("Audio stream completed. Total bytes sent: %d, read attempts: %d", totalBytesSent, readCount)
 				break
 			}
-			return fmt.Errorf("failed to read from gstreamer: %v", err)
+			return fmt.Errorf("failed to read from gstreamer after %d reads: %v", readCount, err)
 		}
+
+		log.Printf("Read attempt %d: got %d bytes from GStreamer", readCount, n)
 
 		if n > 0 {
 			written, err := as.stream.Write(buffer[:n])
