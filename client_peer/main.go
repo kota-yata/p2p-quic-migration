@@ -14,14 +14,14 @@ import (
 )
 
 const (
-	maxRetries             = 10
-	maxHolePunchAttempts   = 10
-	sessionTimeout         = 60 * time.Second
-	holePunchDelay         = 2 * time.Second
-	connectionTimeout      = 5 * time.Second
-	holePunchTimeout       = 2 * time.Second
-	communicationDuration  = 50 * time.Second
-	maxMessageExchanges    = 10
+	maxRetries            = 10
+	maxHolePunchAttempts  = 10
+	sessionTimeout        = 60 * time.Second
+	holePunchDelay        = 2 * time.Second
+	connectionTimeout     = 5 * time.Second
+	holePunchTimeout      = 2 * time.Second
+	communicationDuration = 50 * time.Second
+	maxMessageExchanges   = 10
 )
 
 var clientConnectionEstablished = make(chan bool, 1)
@@ -70,7 +70,7 @@ func (c *Client) Run() error {
 	defer c.cleanup()
 
 	intermediateClient := intermediate.NewClient(c.serverAddr, c.tlsConfig, c.quicConfig, c.transport)
-	
+
 	intermediateConn, err := intermediateClient.ConnectToServer()
 	if err != nil {
 		return fmt.Errorf("failed to connect to intermediate server: %v", err)
@@ -105,7 +105,6 @@ func (c *Client) cleanup() {
 	}
 }
 
-
 func (c *Client) waitForSession() {
 	log.Println("Waiting for peer discovery...")
 	select {
@@ -115,7 +114,6 @@ func (c *Client) waitForSession() {
 		log.Println("Context cancelled")
 	}
 }
-
 
 func connectToPeer(peerAddr string, tr *quic.Transport, tlsConfig *tls.Config, quicConfig *quic.Config) {
 	conn, err := establishConnection(peerAddr, tr, tlsConfig, quicConfig)
@@ -193,7 +191,7 @@ func handlePeerCommunication(conn *quic.Conn, peerAddr string) error {
 	defer stream.Close()
 
 	log.Printf("Starting to receive video stream from peer %s", peerAddr)
-	
+
 	videoReceiver := NewVideoReceiver(stream)
 	if err := videoReceiver.ReceiveVideo(); err != nil {
 		return fmt.Errorf("failed to receive video stream: %v", err)
@@ -203,8 +201,7 @@ func handlePeerCommunication(conn *quic.Conn, peerAddr string) error {
 	return nil
 }
 
-
-func attemptNATHolePunch(tr quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan bool) {
+func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan bool) {
 	log.Printf("Client starting NAT hole punching to peer: %s (will attempt %d times)", peerAddr, maxHolePunchAttempts)
 
 	peerAddrResolved, err := net.ResolveUDPAddr("udp", peerAddr)
@@ -231,7 +228,7 @@ func attemptNATHolePunch(tr quic.Transport, peerAddr string, tlsConfig *tls.Conf
 	log.Printf("Client completed all %d NAT hole punch attempts to peer %s", maxHolePunchAttempts, peerAddr)
 }
 
-func performHolePunchAttempt(tr quic.Transport, peerAddrResolved *net.UDPAddr, tlsConfig *tls.Config, quicConfig *quic.Config, peerAddr string, attempt int) {
+func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, tlsConfig *tls.Config, quicConfig *quic.Config, peerAddr string, attempt int) {
 	log.Printf("Client NAT hole punch attempt %d/%d to peer %s", attempt, maxHolePunchAttempts, peerAddr)
 
 	ctx, cancel := context.WithTimeout(context.Background(), holePunchTimeout)
@@ -242,29 +239,29 @@ func performHolePunchAttempt(tr quic.Transport, peerAddrResolved *net.UDPAddr, t
 	if err != nil {
 		log.Printf("Client NAT hole punch attempt %d/%d to %s completed (connection failed, which is normal): %v", attempt, maxHolePunchAttempts, peerAddr, err)
 	} else {
-		log.Printf("Client NAT hole punch attempt %d/%d to %s succeeded - waiting for server stream!", attempt, maxHolePunchAttempts, peerAddr)
-		
-		// Use this successful connection for video receiving - wait for server to open stream
+		log.Printf("Client NAT hole punch attempt %d/%d to %s succeeded - opening stream to server!", attempt, maxHolePunchAttempts, peerAddr)
+
+		// Use this successful connection for video receiving - open stream to server
 		go func() {
 			defer conn.CloseWithError(0, "")
-			
-			stream, err := conn.AcceptStream(context.Background())
+
+			stream, err := conn.OpenStreamSync(context.Background())
 			if err != nil {
-				log.Printf("Failed to accept stream from server: %v", err)
+				log.Printf("Failed to open stream to server: %v", err)
 				return
 			}
-			
-			log.Printf("Accepted stream from server, starting to receive video stream from peer %s", peerAddr)
-			
+
+			log.Printf("Opened stream to server, starting to receive video stream from peer %s", peerAddr)
+
 			videoReceiver := NewVideoReceiver(stream)
 			if err := videoReceiver.ReceiveVideo(); err != nil {
 				log.Printf("Failed to receive video stream: %v", err)
 				return
 			}
-			
+
 			log.Printf("Video reception from %s completed successfully!", peerAddr)
 		}()
-		
+
 		// Signal that hole punching completed successfully
 		select {
 		case holePunchCompleted <- true:
@@ -283,4 +280,3 @@ func waitBeforeNextAttempt(attempt int) {
 	log.Printf("Client waiting %v before next hole punch attempt %d", backoffDuration, attempt+1)
 	time.Sleep(backoffDuration)
 }
-

@@ -27,7 +27,7 @@ func NewClientPeerHandler(transport *quic.Transport, tlsConfig *tls.Config, quic
 
 func (cph *ClientPeerHandler) HandleInitialPeers(peers []shared.PeerInfo) {
 	for _, peer := range peers {
-		go attemptNATHolePunch(*cph.transport, peer.Address, cph.tlsConfig, cph.quicConfig, holePunchCompleted)
+		go attemptNATHolePunch(cph.transport, peer.Address, cph.tlsConfig, cph.quicConfig, holePunchCompleted)
 	}
 
 	if len(peers) > 0 && !cph.hasConnected {
@@ -36,7 +36,7 @@ func (cph *ClientPeerHandler) HandleInitialPeers(peers []shared.PeerInfo) {
 }
 
 func (cph *ClientPeerHandler) HandleNewPeer(peer shared.PeerInfo) {
-	go attemptNATHolePunch(*cph.transport, peer.Address, cph.tlsConfig, cph.quicConfig, holePunchCompleted)
+	go attemptNATHolePunch(cph.transport, peer.Address, cph.tlsConfig, cph.quicConfig, holePunchCompleted)
 
 	if !cph.hasConnected {
 		cph.connectToPeerWithDelay(peer.Address)
