@@ -18,24 +18,24 @@ import (
 )
 
 const (
-	serverPort               = 1234
-	maxHolePunchAttempts     = 10
+	serverPort                = 1234
+	maxHolePunchAttempts      = 10
 	observedAddressMaxRetries = 10
-	intermediateConnTimeout  = 10 * time.Second
-	holePunchTimeout         = 2 * time.Second
-	periodicMessageInterval  = 5 * time.Second
-	maxPeriodicMessages      = 10
+	intermediateConnTimeout   = 10 * time.Second
+	holePunchTimeout          = 2 * time.Second
+	periodicMessageInterval   = 5 * time.Second
+	maxPeriodicMessages       = 10
 )
 
 var connectionEstablished = make(chan bool, 1)
 
 func main() {
 	config := parseFlags()
-	
+
 	server := &Server{
 		config: config,
 	}
-	
+
 	if err := server.Run(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
@@ -288,7 +288,7 @@ func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Con
 	for attempt := 1; attempt <= maxHolePunchAttempts; attempt++ {
 		select {
 		case <-stopChan:
-			log.Printf("Stopping NAT hole punch to %s - connection established", peerAddr)
+			log.Printf("Stopping server NAT hole punch to %s - connection established", peerAddr)
 			return
 		default:
 		}
