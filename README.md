@@ -22,7 +22,7 @@ make gs-test
 ```
 
 1. Run `make intermediate` somewhere  
-2. Run `make server` on a machine behind NAT  
+2. Run `make server` on a machine behind NAT with your mp3 file at ./static/output.mp3
 3. Run `make client` on a machine behind NAT  
 
 You must run the client and server on different networks unless your router supports [NAT loopback](https://nordvpn.com/cybersecurity/glossary/nat-loopback/) (a.k.a. NAT hairpinning).
