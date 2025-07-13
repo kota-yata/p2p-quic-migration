@@ -49,6 +49,7 @@ type Client struct {
 	udpConn          *net.UDPConn
 	networkMonitor   *NetworkMonitor
 	intermediateConn *quic.Conn
+	peerHandler      *ClientPeerHandler
 }
 
 func createTLSConfig() *tls.Config {
@@ -88,6 +89,7 @@ func (c *Client) Run() error {
 	defer c.networkMonitor.Stop()
 
 	peerHandler := NewClientPeerHandler(c.transport, c.tlsConfig, c.quicConfig)
+	c.peerHandler = peerHandler
 	go intermediateClient.ManagePeerDiscovery(intermediateConn, peerHandler)
 
 	go c.handleIntermediateStreams(intermediateConn)
@@ -168,6 +170,11 @@ func (c *Client) handleNetworkChange(oldAddr, newAddr string) {
 	}
 
 	log.Printf("Successfully migrated connection to new address: %s", newAddr)
+
+	// Start hole punching to all known peers with the new network interface
+	if c.peerHandler != nil {
+		c.peerHandler.StartHolePunchingToAllPeers(c.transport, c.tlsConfig, c.quicConfig)
+	}
 
 	// After successful migration, notify the intermediate server about the address change
 	if err := c.sendNetworkChangeNotification(oldAddr, newAddr); err != nil {
