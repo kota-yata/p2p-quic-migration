@@ -49,29 +49,16 @@ func updateAudioPosition(position int64) {
 func (as *AudioStreamer) StreamAudio() error {
 	var cmd *exec.Cmd
 	
-	if as.startBytes > 0 {
-		seekTime := as.calculateSeekTime(as.startBytes)
-		log.Printf("Resuming audio from position %d bytes (approx %.2f seconds)", as.startBytes, seekTime)
-		
-		cmd = exec.Command("ffmpeg", 
-			"-ss", fmt.Sprintf("%.3f", seekTime),
-			"-i", "../static/output.mp3",
-			"-f", "s16le",
-			"-ar", "44100",
-			"-ac", "2",
-			"-")
-	} else {
-		log.Printf("Starting audio from beginning")
-		
-		cmd = exec.Command("gst-launch-1.0",
-			"filesrc", "location=../static/output.mp3", "!",
-			"decodebin", "!",
-			"audioconvert", "!",
-			"audioresample", "!",
-			"audio/x-raw,rate=44100,channels=2,format=S16LE,layout=interleaved", "!",
-			"queue", "max-size-time=1000000000", "!",
-			"fdsink", "fd=1", "sync=false")
-	}
+	log.Printf("Starting audio from beginning (position tracking will resume from current transmission)")
+	
+	cmd = exec.Command("gst-launch-1.0",
+		"filesrc", "location=../static/output.mp3", "!",
+		"decodebin", "!",
+		"audioconvert", "!",
+		"audioresample", "!",
+		"audio/x-raw,rate=44100,channels=2,format=S16LE,layout=interleaved", "!",
+		"queue", "max-size-time=1000000000", "!",
+		"fdsink", "fd=1", "sync=false")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -104,7 +91,10 @@ func (as *AudioStreamer) StreamAudio() error {
 
 	buffer := make([]byte, 4096)
 	totalBytesSent := int64(0)
+	totalBytesRead := int64(0)
 	readCount := 0
+	
+	log.Printf("Will skip %d bytes to resume from correct position", as.startBytes)
 
 	for {
 		n, err := stdout.Read(buffer)
@@ -119,16 +109,34 @@ func (as *AudioStreamer) StreamAudio() error {
 		}
 
 		if n > 0 {
-			written, err := as.stream.Write(buffer[:n])
-			if err != nil {
-				return fmt.Errorf("failed to write audio data to stream after %d bytes: %v", totalBytesSent, err)
-			}
-			totalBytesSent += int64(written)
+			totalBytesRead += int64(n)
 			
-			updateAudioPosition(as.startBytes + totalBytesSent)
+			if totalBytesRead <= as.startBytes {
+				log.Printf("Skipping %d bytes (total skipped: %d/%d)", n, totalBytesRead, as.startBytes)
+				continue
+			}
+			
+			var dataToSend []byte
+			if totalBytesRead-int64(n) < as.startBytes {
+				skipInThisBuffer := as.startBytes - (totalBytesRead - int64(n))
+				dataToSend = buffer[skipInThisBuffer:n]
+				log.Printf("Partial skip: skipping %d bytes from this %d byte buffer", skipInThisBuffer, n)
+			} else {
+				dataToSend = buffer[:n]
+			}
+			
+			if len(dataToSend) > 0 {
+				written, err := as.stream.Write(dataToSend)
+				if err != nil {
+					return fmt.Errorf("failed to write audio data to stream after %d bytes: %v", totalBytesSent, err)
+				}
+				totalBytesSent += int64(written)
+				
+				updateAudioPosition(as.startBytes + totalBytesSent)
 
-			if totalBytesSent%262144 == 0 {
-				log.Printf("Sent %.1f MB of audio data", float64(totalBytesSent)/1048576)
+				if totalBytesSent%262144 == 0 {
+					log.Printf("Sent %.1f MB of audio data", float64(totalBytesSent)/1048576)
+				}
 			}
 		}
 	}
@@ -145,11 +153,3 @@ func (as *AudioStreamer) StreamAudio() error {
 	return nil
 }
 
-func (as *AudioStreamer) calculateSeekTime(bytes int64) float64 {
-	const sampleRate = 44100
-	const channels = 2  
-	const bytesPerSample = 2
-	
-	samplesPerSecond := sampleRate * channels * bytesPerSample
-	return float64(bytes) / float64(samplesPerSecond)
-}
