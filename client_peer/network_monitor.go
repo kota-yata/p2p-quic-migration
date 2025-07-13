@@ -72,7 +72,7 @@ func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
 }
 
 func (nm *NetworkMonitor) monitorLoop() {
-	ticker := time.NewTicker(200 * time.Millisecond)
+	ticker := time.NewTicker(3000 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
