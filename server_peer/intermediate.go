@@ -90,7 +90,10 @@ type AudioRelay struct {
 func (ar *AudioRelay) StartRelaying() {
 	defer ar.stream.Close()
 
-	audioStreamer := NewAudioStreamer(ar.stream)
+	currentPosition := getCurrentAudioPosition()
+	log.Printf("Starting audio relay for peer %s from position %d bytes", ar.targetPeerID, currentPosition)
+	
+	audioStreamer := NewAudioStreamerFromPosition(ar.stream, currentPosition)
 	if err := audioStreamer.StreamAudio(); err != nil {
 		log.Printf("Audio relay streaming failed: %v", err)
 	}
