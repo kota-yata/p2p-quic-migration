@@ -16,11 +16,11 @@ import (
 const (
 	maxRetries            = 10
 	maxHolePunchAttempts  = 10
-	sessionTimeout        = 300 * time.Second // Increased to 5 minutes for audio streaming
+	sessionTimeout        = 300 * time.Second
 	holePunchDelay        = 2 * time.Second
 	connectionTimeout     = 5 * time.Second
 	holePunchTimeout      = 2 * time.Second
-	communicationDuration = 300 * time.Second // Increased to 5 minutes for audio streaming
+	communicationDuration = 300 * time.Second
 	maxMessageExchanges   = 10
 )
 
@@ -108,7 +108,6 @@ func (c *Client) handleIntermediateStreams(conn *quic.Conn) {
 
 		log.Printf("Accepted stream from intermediate server for audio relay")
 
-		// Handle audio relay stream
 		go func(s *quic.Stream) {
 			defer func() {
 				s.Close()
@@ -163,7 +162,6 @@ func (c *Client) handleNetworkChange(oldAddr, newAddr string) {
 		return
 	}
 
-	// Perform connection migration to the new network interface
 	if err := c.migrateConnection(newAddr); err != nil {
 		log.Printf("Failed to migrate connection: %v", err)
 		return
@@ -171,59 +169,49 @@ func (c *Client) handleNetworkChange(oldAddr, newAddr string) {
 
 	log.Printf("Successfully migrated connection to new address: %s", newAddr)
 
-	// Start hole punching to all known peers with the new network interface
 	if c.peerHandler != nil {
 		c.peerHandler.StartHolePunchingToAllPeers(c.transport, c.tlsConfig, c.quicConfig)
 	}
 
-	// After successful migration, notify the intermediate server about the address change
 	if err := c.sendNetworkChangeNotification(oldAddr, newAddr); err != nil {
 		log.Printf("Failed to send network change notification after migration: %v", err)
 	}
 }
 
 func (c *Client) migrateConnection(newAddr string) error {
-	// Check if the connection is still alive before attempting migration
 	if c.intermediateConn.Context().Err() != nil {
 		return fmt.Errorf("connection is already closed, cannot migrate")
 	}
 
-	// Create a new UDP connection for the new network interface
 	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(newAddr), Port: 0})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection: %v", err)
 	}
 
-	// Create a new transport for the new network path
 	newTransport := &quic.Transport{
 		Conn: newUDPConn,
 	}
 
-	// Add the new path to the existing connection
 	path, err := c.intermediateConn.AddPath(newTransport)
 	if err != nil {
 		newUDPConn.Close()
 		return fmt.Errorf("failed to add new path: %v", err)
 	}
 
-	// Probe the new path to ensure it works
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	log.Printf("Probing new path from %s to intermediate server", newAddr)
 	probeErr := path.Probe(ctx)
 	if probeErr != nil {
-		log.Printf("Path probing failed after 5 seconds: %v", probeErr)
-		// Don't fail migration immediately, try switching anyway as some networks don't respond to probes
-		log.Printf("Attempting to switch to new path despite probe failure")
+		newUDPConn.Close()
+		return fmt.Errorf("path probing failed: %v", probeErr)
 	} else {
 		log.Printf("Path probing succeeded")
 	}
 
-	// Switch to the new path
 	log.Printf("Switching to new path")
 	if err := path.Switch(); err != nil {
-		// Safely close path with error checking
 		if closeErr := path.Close(); closeErr != nil {
 			log.Printf("Warning: failed to close path after switch failure: %v", closeErr)
 		}
@@ -258,11 +246,9 @@ func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
 		return fmt.Errorf("connection is closed")
 	}
 
-	// Get the full address including port from the connection
-	oldFullAddr := oldAddr + ":0"                          // We don't have the old port, use placeholder
-	newFullAddr := c.intermediateConn.LocalAddr().String() // This includes the port from migrated connection
+	oldFullAddr := oldAddr + ":0"
+	newFullAddr := c.intermediateConn.LocalAddr().String()
 
-	// Open a new stream on the migrated connection to send the notification
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
@@ -270,7 +256,6 @@ func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open stream: %v", err)
 	}
-	// defer stream.Close()
 
 	notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldFullAddr, newFullAddr)
 	_, err = stream.Write([]byte(notification))
@@ -322,7 +307,6 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 	} else {
 		log.Printf("Client NAT hole punch attempt %d/%d to %s succeeded - waiting for server to open stream!", attempt, maxHolePunchAttempts, peerAddr)
 
-		// Use this successful connection for video receiving - wait for server to open stream
 		go func() {
 			defer conn.CloseWithError(0, "")
 
@@ -343,12 +327,10 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 			log.Printf("Audio reception from %s completed successfully!", peerAddr)
 		}()
 
-		// Signal that hole punching completed successfully
 		select {
 		case holePunchCompleted <- true:
 			log.Printf("Signaled hole punch completion for %s", peerAddr)
 		default:
-			// Channel already has a value, which is fine
 		}
 	}
 }
