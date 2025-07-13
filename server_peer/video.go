@@ -25,7 +25,7 @@ func (as *AudioStreamer) StreamAudio() error {
 		"decodebin", "!",
 		"audioconvert", "!",
 		"audioresample", "!",
-		"audio/x-raw,rate=44100,channels=2,format=S16LE", "!",
+		"audio/x-raw,rate=44100,channels=2,format=S16LE,layout=interleaved", "!",
 		"queue", "max-size-time=1000000000", "!",
 		"fdsink", "fd=1", "sync=false")
 

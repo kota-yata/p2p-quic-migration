@@ -24,12 +24,13 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 
 	// Create GStreamer pipeline for real-time audio playback
 	cmd := exec.Command("gst-launch-1.0",
-		"fdsrc", "fd=0", "!",
-		"audio/x-raw,rate=44100,channels=2,format=S16LE", "!",
-		"queue", "!",
+		"fdsrc", "fd=0", "blocksize=4096", "!",
+		"audio/x-raw,rate=44100,channels=2,format=S16LE,layout=interleaved", "!",
+		"queue", "max-size-buffers=200", "leaky=downstream", "!",
 		"audioconvert", "!",
 		"audioresample", "!",
-		"autoaudiosink")
+		"audio/x-raw,rate=44100", "!",
+		"autoaudiosink", "sync=false")
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
