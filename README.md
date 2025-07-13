@@ -1,10 +1,11 @@
-# p2p-quic-migration
+# p2p-quic-migration  
 P2P QUIC with seamless connection migration.
 
-This project uses [modified quic-go](https://github.com/kota-yata/quic-go). Put this repository and quic-go at the same directory hierarchy and it will work (If not, let me know).
+This project uses a [modified version of quic-go](https://github.com/kota-yata/quic-go). Place this repository and `quic-go` in the same directory hierarchy and it will work (if not, let me know).
 
-## Development
-my man claude code has made some nice make commands:
+## Development  
+My man Claude wrote some nice `make` commands:
+
 ```bash
 # Run client (peer)
 make client
@@ -12,58 +13,62 @@ make client
 make server
 # Run intermediate server
 make intermediate
-# Generate certs for servers. Running each componenet with make will automatically run this beforehand
+# Generate certs for servers. Running any component with make will automatically run this beforehand
 make certs
 # Build binaries
 make build
-# Test if gstreamer pipeline works
+# Test if GStreamer pipeline works
 make gs-test
 ```
 
-1. Run `make intermediate` somewhere
-2. Run `make server` somewhere behind NAT
-3. Run `make client` somewhere behind NAT
+1. Run `make intermediate` somewhere  
+2. Run `make server` on a machine behind NAT  
+3. Run `make client` on a machine behind NAT  
 
-You need to run the client and server in different networks unless your router supports [NAT loopback](https://nordvpn.com/cybersecurity/glossary/nat-loopback/) a.k.a NAT hairpinning
+You must run the client and server on different networks unless your router supports [NAT loopback](https://nordvpn.com/cybersecurity/glossary/nat-loopback/) (a.k.a. NAT hairpinning).
 
-If the connection is success, you should hear whatever the sound from static/output.mp3
+If the connection succeeds, you should hear the sound from `static/output.mp3`.
 
-## How P2P QUIC connection migration works
-### P2P Connection Establishment
+## How P2P QUIC Connection Migration Works
+
+### P2P Connection Establishment  
 <img src="./static/conn-establish.png" width="500"/>
 
-Steps here are pretty similar to WebRTC's approach, with a bit difference for simplicity.
+The steps are similar to WebRTC’s approach, with some simplifications.
 
-#### Address Exchange
-The client peer and server peer first connect to the intermediate server. The intermediate server retrieves each peer’s external address and exchanges them. Now that each peer has other party's address, they can start hole punching.
+#### Address Exchange  
+The client peer and server peer first connect to the intermediate server. The intermediate server retrieves each peer’s external address and exchanges them. Once both peers have each other's address, they can begin hole punching.
 
-In WebRTC, this is done by a STUN server and a signaling server. a peer asks about its reflexive address(es) to the STUN server and notify them to the signaling server. the signaling server simply relays it to the other peers. In most cases WebRTC peers gather more than one address:port pair (called "candidate") including local addresses, because sometimes two peers in the same network want to connect to each other. This project does not handle local pair exchange at this point.
+In WebRTC, this is typically done using a STUN server and a signaling server. A peer asks the STUN server for its reflexive address, and then sends it to the signaling server, which relays it to the other peer. WebRTC peers often gather multiple address-port pairs (called "candidates"), including local addresses, to allow direct connections even within the same LAN. This project currently does **not** handle local candidate exchange.
 
-This project used to employ [QUIC Address Discovery](https://www.ietf.org/archive/id/draft-seemann-quic-address-discovery-00.html) to do STUN over QUIC type of approach. The draft basically defines OBSERVED_ADDRESS frame, which is equivalent to STUN's MAPPED_ADDRESS attribute, to notify peer's reflexive address. The frame is bundled in a probe packet, so it could be sent as quick as possible. In real-world scenario, this draft's approach will work nicer than how this project currently exchange addresses because a peer might want to gather its reflexive address from multiple servers for security reasons or determining NAT type or whatever reasons. This project now employs the intermediate server directly exchanging peer's addresses instead of notifying them back because this is simpler and enough for an experiment.
+Previously, this project used [QUIC Address Discovery](https://www.ietf.org/archive/id/draft-seemann-quic-address-discovery-00.html) to perform a STUN-like function over QUIC. The draft defines an `OBSERVED_ADDRESS` frame, equivalent to STUN’s `MAPPED_ADDRESS` attribute, allowing a peer to learn its reflexive address as quick as possible via a probe packet.
 
-#### NAT Hole Punching
-Now that both peers have other party's candidate, they can start NAT hole punching.
+While that approach may work better in real-world scenarios (e.g., when gathering addresses from multiple sources for security or NAT type detection), this project now uses the intermediate server to directly exchange peer addresses for simplicity.
 
-NAT hole punch is very common and required process in WebRTC or other p2p systems. Both peers send UDP packets to let NAT creates address map. These packets might not arrive thier destination as the counterpart might not have the NAT mapping yet, but it's totally fine. Eventually both network's router have proper mappings to their NAT tables, and the connection can be established like a conventional client-server connection. 
+#### NAT Hole Punching  
+Once peers have each other’s address, they begin NAT hole punching.
 
-In this project, peers simply try to start QUIC connection from both sides again and again until one of the connection is established. Again, WebRTC hires much more concrete approach during ICE pair nomination. For every combination of the local candidates and remote candidates, a peer sends STUN Binding Request. The peer determines the final candidate pair by connectivity success, RTT, user's policy and many other factors. If a user force to use relay server, it selects connection through TURN server no matter what.
+NAT hole punching is a standard process in P2P connections. Both peers send UDP packets to create NAT table mappings. These initial packets might not reach the destination if the NAT mapping isn't yet established, but that’s expected. Eventually, both routers will have valid mappings and a direct connection will be possible.
 
-### Handling Address Change
-There are cases where peer's address is changed and the connection no longer persistes. One of them is when you leave home and the network is switched to 5G from WiFi. In client-server connection over QUIC, this is handled nicely with famous "connection migration" feature. Instead of identifying connection by 4-tuple like TCP, QUIC identifies connections by Connection IDs. That way a server is aware of two packets from different source addresses is in the same connection.
+In this project, peers repeatedly attempt to initiate a QUIC connection from both sides until one succeeds. By contrast, WebRTC uses a more robust method with ICE (Interactive Connectivity Establishment), sending STUN Binding Requests for every combination of local and remote candidates. ICE then selects the final pair based on connectivity, RTT, user policy, and other criteria. If forced to use a relay (TURN) server, ICE will choose that path regardless of other available connections.
 
-This does not quite work in p2p scenarios only because NAT hole punch is required for every p2p connection. The packet from new address does't arrive in the first place blocked by NAT.
+### Handling Address Changes  
+Sometimes a peer's address changes and the connection breaks — e.g., when switching from Wi-Fi to 5G.
 
-This project addresses this problem in a very simple way. When a client peer's address changes, it signals the change to the server peer through the intermediate server. 
+In a client-server model over QUIC, this is handled seamlessly using the “connection migration” feature. QUIC identifies connections using Connection IDs rather than the typical 4-tuple, allowing servers to associate packets from a new IP/port with the same connection.
+
+However, this doesn't work as-is in P2P scenarios because a new NAT hole punch is required whenever a peer’s address changes. Packets from the new address get blocked by NAT before the mapping exists.
+
+This project handles that problem simply: when a client peer's address changes, it signals the server peer through the intermediate server.
 
 <img src="./static/network-change.png" width="500"/>
 
-The server peer then immediately start switch packet transmission from P2P connection to through the intermediate server. During NAT hole punch for the new address, application packets are sent from the server peer to the client peer through the interemediate server.
+The server peer then immediately switches packet transmission from the P2P connection to the intermediate server. During the new NAT hole punching process, application data is sent via the intermediate server.
 
 <img src="./static/conn-switch.png" width="500"/>
 
-As soon as the NAT hole punch is done the packet transmission is switched back to using new p2p connection.
+Once the new NAT mappings are in place, the peers resume direct P2P communication.
 
 <img src="./static/new-p2p.png" width="500"/>
 
-This approach is quite generic, meaning this could be applied to WebRTC or other systems. WebRTC handles address change by triggering ICE Restart, which basically does connection establishment step again. ICE Restart takes about 5 seconds or more as far as I've tested, and this project's approach can outperform this.
-
+This approach is quite general and could be applied to WebRTC or other systems. WebRTC handles address changes by triggering an ICE restart — essentially re-running the connection establishment step. From my testing, ICE restarts take about 5 seconds or more, and this project’s approach performs faster in comparison.
