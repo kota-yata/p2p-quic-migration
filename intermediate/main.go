@@ -263,7 +263,11 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 	for {
 		n, err := stream.Read(buffer)
 		if err != nil {
-			log.Printf("Stream read error: %v", err)
+			if err.Error() == "EOF" {
+				log.Printf("Stream closed by peer %s", peerID)
+			} else {
+				log.Printf("Stream read error: %v", err)
+			}
 			return
 		}
 

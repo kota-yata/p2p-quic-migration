@@ -150,6 +150,9 @@ func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
 		return fmt.Errorf("failed to write notification: %v", err)
 	}
 	
+	// Close the write side to signal completion
+	stream.Close()
+	
 	log.Printf("Sent network change notification to intermediate server")
 	return nil
 }
