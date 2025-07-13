@@ -38,14 +38,39 @@ func (nm *NetworkMonitor) Stop() {
 }
 
 func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
-	conn, err := net.Dial("udp", "8.8.8.8:80")
+	interfaces, err := net.Interfaces()
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
 	
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	return localAddr.IP.String(), nil
+	for _, iface := range interfaces {
+		// Skip loopback and down interfaces
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			
+			// Return the first non-loopback IPv4 address
+			if ip != nil && !ip.IsLoopback() && ip.To4() != nil {
+				return ip.String(), nil
+			}
+		}
+	}
+	
+	return "", fmt.Errorf("no suitable network interface found")
 }
 
 func (nm *NetworkMonitor) monitorLoop() {
