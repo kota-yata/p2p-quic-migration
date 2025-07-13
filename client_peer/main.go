@@ -146,7 +146,13 @@ func (c *Client) handleNetworkChange(oldAddr, newAddr string) {
 	}
 }
 
+
 func (c *Client) migrateConnection(newAddr string) error {
+	// Check if the connection is still alive before attempting migration
+	if c.intermediateConn.Context().Err() != nil {
+		return fmt.Errorf("connection is already closed, cannot migrate")
+	}
+
 	// Create a new UDP connection for the new network interface
 	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(newAddr), Port: 0})
 	if err != nil {
@@ -171,7 +177,10 @@ func (c *Client) migrateConnection(newAddr string) error {
 
 	log.Printf("Probing new path to %s", newAddr)
 	if err := path.Probe(ctx); err != nil {
-		path.Close()
+		// Safely close path with error checking
+		if closeErr := path.Close(); closeErr != nil {
+			log.Printf("Warning: failed to close path after probe failure: %v", closeErr)
+		}
 		newUDPConn.Close()
 		return fmt.Errorf("failed to probe new path: %v", err)
 	}
@@ -179,7 +188,10 @@ func (c *Client) migrateConnection(newAddr string) error {
 	// Switch to the new path
 	log.Printf("Switching to new path")
 	if err := path.Switch(); err != nil {
-		path.Close()
+		// Safely close path with error checking
+		if closeErr := path.Close(); closeErr != nil {
+			log.Printf("Warning: failed to close path after switch failure: %v", closeErr)
+		}
 		newUDPConn.Close()
 		return fmt.Errorf("failed to switch to new path: %v", err)
 	}

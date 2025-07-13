@@ -29,7 +29,7 @@ type AudioRelaySession struct {
 	sourcePeerID   string
 	targetPeerID   string
 	sourceStream   *quic.Stream
-	targetStream   quic.Stream
+	targetStream   *quic.Stream
 	stopChan       chan bool
 }
 
@@ -200,7 +200,7 @@ func (pr *PeerRegistry) handleAudioRelay(message, sourcePeerID string, sourceStr
 		sourcePeerID: sourcePeerID,
 		targetPeerID: targetPeerID,
 		sourceStream: sourceStream,
-		targetStream: *targetStream,
+		targetStream: targetStream,
 		stopChan:     make(chan bool, 1),
 	}
 	
