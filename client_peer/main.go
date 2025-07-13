@@ -215,6 +215,10 @@ func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
 		return fmt.Errorf("connection is closed")
 	}
 
+	// Get the full address including port from the connection
+	oldFullAddr := oldAddr + ":0" // We don't have the old port, use placeholder
+	newFullAddr := c.intermediateConn.LocalAddr().String() // This includes the port
+
 	// Open a new stream on the migrated connection to send the notification
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -225,13 +229,13 @@ func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
 	}
 	defer stream.Close()
 
-	notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldAddr, newAddr)
+	notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldFullAddr, newFullAddr)
 	_, err = stream.Write([]byte(notification))
 	if err != nil {
 		return fmt.Errorf("failed to write notification: %v", err)
 	}
 
-	log.Printf("Sent network change notification to intermediate server")
+	log.Printf("Sent network change notification to intermediate server: %s -> %s", oldFullAddr, newFullAddr)
 	return nil
 }
 

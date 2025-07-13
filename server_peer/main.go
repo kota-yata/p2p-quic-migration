@@ -80,7 +80,7 @@ func (s *Server) Run() error {
 
 	intermediateClient.WaitForObservedAddress(intermediateConn)
 
-	peerHandler := NewServerPeerHandler(s.transport, s.tlsConfig, s.quicConfig)
+	peerHandler := NewServerPeerHandler(s.transport, s.tlsConfig, s.quicConfig, intermediateConn)
 	go intermediateClient.ManagePeerDiscovery(intermediateConn, peerHandler)
 
 	return s.runPeerListener()

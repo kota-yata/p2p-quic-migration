@@ -21,6 +21,16 @@ type PeerRegistry struct {
 	peers               map[string]*shared.PeerInfo
 	connections         map[string]*quic.Conn
 	notificationStreams map[string]*quic.Stream
+	audioRelays         map[string]*AudioRelaySession
+}
+
+// AudioRelaySession represents an active audio relay between two peers
+type AudioRelaySession struct {
+	sourcePeerID   string
+	targetPeerID   string
+	sourceStream   *quic.Stream
+	targetStream   quic.Stream
+	stopChan       chan bool
 }
 
 func NewPeerRegistry() *PeerRegistry {
@@ -28,6 +38,7 @@ func NewPeerRegistry() *PeerRegistry {
 		peers:               make(map[string]*shared.PeerInfo),
 		connections:         make(map[string]*quic.Conn),
 		notificationStreams: make(map[string]*quic.Stream),
+		audioRelays:         make(map[string]*AudioRelaySession),
 	}
 }
 
@@ -154,6 +165,83 @@ func (pr *PeerRegistry) handleNetworkChange(message, peerID string) {
 	pr.notifyPeersAboutNetworkChange(peerID, oldAddr, newAddr)
 }
 
+func (pr *PeerRegistry) handleAudioRelay(message, sourcePeerID string, sourceStream *quic.Stream) {
+	parts := strings.Split(message, "|")
+	if len(parts) != 2 {
+		log.Printf("Invalid audio relay message format from %s: %s", sourcePeerID, message)
+		return
+	}
+	
+	targetPeerID := parts[1]
+	log.Printf("Setting up audio relay from %s to %s", sourcePeerID, targetPeerID)
+	
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	
+	// Check if target peer exists and has a connection
+	targetConn, exists := pr.connections[targetPeerID]
+	if !exists {
+		log.Printf("Target peer %s not found for audio relay", targetPeerID)
+		sourceStream.Write([]byte("ERROR: Target peer not found"))
+		return
+	}
+	
+	// Open a stream to the target peer for audio relay
+	targetStream, err := targetConn.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Printf("Failed to open stream to target peer %s: %v", targetPeerID, err)
+		sourceStream.Write([]byte("ERROR: Failed to connect to target"))
+		return
+	}
+	
+	// Create audio relay session
+	relayID := fmt.Sprintf("%s->%s", sourcePeerID, targetPeerID)
+	relay := &AudioRelaySession{
+		sourcePeerID: sourcePeerID,
+		targetPeerID: targetPeerID,
+		sourceStream: sourceStream,
+		targetStream: *targetStream,
+		stopChan:     make(chan bool, 1),
+	}
+	
+	pr.audioRelays[relayID] = relay
+	
+	// Start the relay in a goroutine
+	go relay.StartRelay()
+	
+	log.Printf("Audio relay session started: %s", relayID)
+}
+
+func (ars *AudioRelaySession) StartRelay() {
+	defer func() {
+		ars.targetStream.Close()
+		log.Printf("Audio relay session ended: %s->%s", ars.sourcePeerID, ars.targetPeerID)
+	}()
+	
+	// Relay audio data from source to target
+	buffer := make([]byte, 4096)
+	for {
+		select {
+		case <-ars.stopChan:
+			return
+		default:
+			n, err := ars.sourceStream.Read(buffer)
+			if err != nil {
+				log.Printf("Audio relay read error: %v", err)
+				return
+			}
+			
+			if n > 0 {
+				_, err = ars.targetStream.Write(buffer[:n])
+				if err != nil {
+					log.Printf("Audio relay write error: %v", err)
+					return
+				}
+			}
+		}
+	}
+}
+
 func (pr *PeerRegistry) notifyPeersAboutNetworkChange(changedPeerID, oldAddr, newAddr string) {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
@@ -278,6 +366,11 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 		// Handle different types of requests
 		if strings.HasPrefix(message, "NETWORK_CHANGE|") {
 			registry.handleNetworkChange(message, peerID)
+			continue
+		}
+		
+		if strings.HasPrefix(message, "AUDIO_RELAY|") {
+			registry.handleAudioRelay(message, peerID, stream)
 			continue
 		}
 
