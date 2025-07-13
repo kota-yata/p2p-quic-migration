@@ -140,7 +140,7 @@ func (pr *PeerRegistry) notifyPeersAboutNewPeer(newPeerID string, newPeerInfo *s
 	}
 }
 
-func (pr *PeerRegistry) handleNetworkChange(message, peerID string) {
+func (pr *PeerRegistry) handleNetworkChange(message, peerID string, conn *quic.Conn) {
 	parts := strings.Split(message, "|")
 	if len(parts) != 3 {
 		log.Printf("Invalid network change message format from %s: %s", peerID, message)
@@ -148,18 +148,22 @@ func (pr *PeerRegistry) handleNetworkChange(message, peerID string) {
 	}
 
 	oldAddr := parts[1]
-	newAddr := parts[2]
-
-	log.Printf("Network change detected for peer %s: %s -> %s", peerID, oldAddr, newAddr)
+	clientReportedAddr := parts[2]
+	
+	// Use the observed external address instead of what the client reports
+	observedAddr := conn.RemoteAddr().String()
+	
+	log.Printf("Network change detected for peer %s: client reported %s -> %s, but using observed address %s", 
+		peerID, oldAddr, clientReportedAddr, observedAddr)
 
 	pr.mu.Lock()
 	if peer, exists := pr.peers[peerID]; exists {
-		peer.Address = newAddr
+		peer.Address = observedAddr
 		peer.LastSeen = time.Now()
 	}
 	pr.mu.Unlock()
 
-	pr.notifyPeersAboutNetworkChange(peerID, oldAddr, newAddr)
+	pr.notifyPeersAboutNetworkChange(peerID, oldAddr, observedAddr)
 }
 
 func (pr *PeerRegistry) handleAudioRelay(message, sourcePeerID string, sourceStream *quic.Stream) {
@@ -362,7 +366,7 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 		message := string(buffer[:n])
 
 		if strings.HasPrefix(message, "NETWORK_CHANGE|") {
-			registry.handleNetworkChange(message, peerID)
+			registry.handleNetworkChange(message, peerID, conn)
 			continue
 		}
 
