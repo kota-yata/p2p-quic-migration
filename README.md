@@ -69,7 +69,7 @@ In WebRTC, this is typically done using a STUN server and a signaling server. A 
 
 Previously, this project used [QUIC Address Discovery](https://www.ietf.org/archive/id/draft-seemann-quic-address-discovery-00.html) to perform a STUN-like function over QUIC. The draft defines an `OBSERVED_ADDRESS` frame, equivalent to STUN’s `MAPPED_ADDRESS` attribute, allowing a peer to learn its reflexive address as quick as possible via a probe packet.
 
-While that approach may work better in real-world scenarios (e.g., when gathering addresses from multiple sources for security or NAT type detection), this project now uses the intermediate server to directly exchange peer addresses for simplicity.
+This approach would work better in real-world scenarios (e.g., when gathering addresses from multiple sources for security or NAT type detection), but this project now uses the intermediate server to directly exchange peer addresses for simplicity.
 
 #### NAT Hole Punching  
 Once peers have each other’s address, they begin NAT hole punching.
