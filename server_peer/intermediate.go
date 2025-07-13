@@ -41,6 +41,14 @@ func (sph *ServerPeerHandler) startHolePunching(peerAddr string) {
 	go attemptNATHolePunch(sph.transport, peerAddr, sph.tlsConfig, sph.quicConfig, connectionEstablished)
 }
 
+func (sph *ServerPeerHandler) StopAudioRelay() {
+	if sph.audioRelay != nil {
+		log.Printf("Stopping audio relay due to P2P reconnection")
+		sph.audioRelay.Stop()
+		sph.audioRelay = nil
+	}
+}
+
 func (sph *ServerPeerHandler) HandleNetworkChange(peerID, oldAddr, newAddr string) {
 	log.Printf("Server received network change notification: peer %s changed from %s to %s", peerID, oldAddr, newAddr)
 
@@ -75,6 +83,7 @@ func (sph *ServerPeerHandler) switchToAudioRelay(targetPeerID string) error {
 	sph.audioRelay = &AudioRelay{
 		stream:       stream,
 		targetPeerID: targetPeerID,
+		stopChan:     make(chan bool, 1),
 	}
 
 	go sph.audioRelay.StartRelaying()
@@ -85,6 +94,7 @@ func (sph *ServerPeerHandler) switchToAudioRelay(targetPeerID string) error {
 type AudioRelay struct {
 	stream       *quic.Stream
 	targetPeerID string
+	stopChan     chan bool
 }
 
 func (ar *AudioRelay) StartRelaying() {
@@ -94,9 +104,34 @@ func (ar *AudioRelay) StartRelaying() {
 	log.Printf("Starting audio relay for peer %s from position %d bytes", ar.targetPeerID, currentPosition)
 	
 	audioStreamer := NewAudioStreamerFromPosition(ar.stream, currentPosition)
-	if err := audioStreamer.StreamAudio(); err != nil {
-		log.Printf("Audio relay streaming failed: %v", err)
+	
+	// Run audio streaming in a goroutine so we can monitor for stop signal
+	done := make(chan error, 1)
+	go func() {
+		done <- audioStreamer.StreamAudio()
+	}()
+	
+	// Wait for either completion or stop signal
+	select {
+	case err := <-done:
+		if err != nil {
+			log.Printf("Audio relay streaming failed: %v", err)
+		} else {
+			log.Printf("Audio relay to peer %s completed normally", ar.targetPeerID)
+		}
+	case <-ar.stopChan:
+		log.Printf("Audio relay to peer %s stopped due to P2P reconnection", ar.targetPeerID)
+		// Close the stream to interrupt the audio streaming
+		ar.stream.Close()
+		return
 	}
+}
 
-	log.Printf("Audio relay to peer %s completed", ar.targetPeerID)
+func (ar *AudioRelay) Stop() {
+	select {
+	case ar.stopChan <- true:
+		log.Printf("Sent stop signal to audio relay for peer %s", ar.targetPeerID)
+	default:
+		// Channel might be full or relay already stopped
+	}
 }

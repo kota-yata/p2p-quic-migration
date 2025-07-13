@@ -83,7 +83,7 @@ func (s *Server) Run() error {
 	peerHandler := NewServerPeerHandler(s.transport, s.tlsConfig, s.quicConfig, intermediateConn)
 	go intermediateClient.ManagePeerDiscovery(intermediateConn, peerHandler)
 
-	return s.runPeerListener()
+	return s.runPeerListener(peerHandler)
 }
 
 func (s *Server) setupTLS() error {
@@ -128,7 +128,7 @@ func (s *Server) cleanup() {
 	}
 }
 
-func (s *Server) runPeerListener() error {
+func (s *Server) runPeerListener(peerHandler *ServerPeerHandler) error {
 	ln, err := s.transport.Listen(s.tlsConfig, s.quicConfig)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
@@ -145,20 +145,23 @@ func (s *Server) runPeerListener() error {
 		}
 		connectionEstablished <- true
 
-		go s.handleIncomingConnection(conn)
+		go s.handleIncomingConnection(conn, peerHandler)
 	}
 }
 
-func (s *Server) handleIncomingConnection(conn *quic.Conn) {
-	log.Print("New Client Connection Accepted. Opening stream for video streaming...")
+func (s *Server) handleIncomingConnection(conn *quic.Conn, peerHandler *ServerPeerHandler) {
+	log.Print("New Client Connection Accepted. Opening stream for audio streaming...")
+
+	// Stop any existing audio relay since we now have direct P2P connection
+	peerHandler.StopAudioRelay()
 
 	stream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
-		log.Printf("Failed to open stream for video streaming: %v", err)
+		log.Printf("Failed to open stream for audio streaming: %v", err)
 		return
 	}
 
-	log.Print("Stream opened, starting video streaming to client")
+	log.Print("Stream opened, starting audio streaming to client via P2P")
 	handlePeerCommunication(stream, conn)
 }
 
