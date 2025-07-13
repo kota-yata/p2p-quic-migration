@@ -20,8 +20,8 @@ func NewAudioStreamer(stream *quic.Stream) *AudioStreamer {
 }
 
 func (as *AudioStreamer) StreamAudio() error {
-	cmd := exec.Command("gst-launch-1.0", 
-		"filesrc", "location=../output.mp3", "!",
+	cmd := exec.Command("gst-launch-1.0",
+		"filesrc", "location=../static/output.mp3", "!",
 		"decodebin", "!",
 		"audioconvert", "!",
 		"audioresample", "!",
@@ -62,11 +62,11 @@ func (as *AudioStreamer) StreamAudio() error {
 	buffer := make([]byte, 4096) // Smaller buffer for audio streaming
 	totalBytesSent := int64(0)
 	readCount := 0
-	
+
 	for {
 		n, err := stdout.Read(buffer)
 		readCount++
-		
+
 		if err != nil {
 			if err == io.EOF {
 				log.Printf("Audio stream completed. Total bytes sent: %d, read attempts: %d", totalBytesSent, readCount)
@@ -83,7 +83,7 @@ func (as *AudioStreamer) StreamAudio() error {
 				return fmt.Errorf("failed to write audio data to stream after %d bytes: %v", totalBytesSent, err)
 			}
 			totalBytesSent += int64(written)
-			
+
 			if totalBytesSent%262144 == 0 { // Log every 256KB for audio
 				log.Printf("Sent %.1f MB of audio data", float64(totalBytesSent)/1048576)
 			}

@@ -16,11 +16,11 @@ import (
 const (
 	maxRetries            = 10
 	maxHolePunchAttempts  = 10
-	sessionTimeout        = 60 * time.Second
+	sessionTimeout        = 300 * time.Second // Increased to 5 minutes for audio streaming
 	holePunchDelay        = 2 * time.Second
 	connectionTimeout     = 5 * time.Second
 	holePunchTimeout      = 2 * time.Second
-	communicationDuration = 50 * time.Second
+	communicationDuration = 300 * time.Second // Increased to 5 minutes for audio streaming
 	maxMessageExchanges   = 10
 )
 
@@ -109,7 +109,7 @@ func (c *Client) waitForSession() {
 	log.Println("Waiting for peer discovery...")
 	select {
 	case <-time.After(sessionTimeout):
-		log.Println("Client session timeout after 60 seconds")
+		log.Println("Client session timeout after 5 minutes")
 	case <-context.Background().Done():
 		log.Println("Context cancelled")
 	}
