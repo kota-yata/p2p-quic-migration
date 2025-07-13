@@ -349,7 +349,6 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 
 	buffer := make([]byte, 1024)
 	for {
-		log.Print("Waiting for data on stream...")
 		n, err := stream.Read(buffer)
 		if err != nil {
 			if err.Error() == "EOF" {
