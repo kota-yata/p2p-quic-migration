@@ -91,8 +91,33 @@ func (c *Client) Run() error {
 	peerHandler := NewClientPeerHandler(c.transport, c.tlsConfig, c.quicConfig)
 	go intermediateClient.ManagePeerDiscovery(intermediateConn, peerHandler)
 
+	// Start listening for incoming streams from intermediate server (for audio relay)
+	go c.handleIntermediateStreams(intermediateConn)
+
 	c.waitForSession()
 	return nil
+}
+
+func (c *Client) handleIntermediateStreams(conn *quic.Conn) {
+	for {
+		stream, err := conn.AcceptStream(context.Background())
+		if err != nil {
+			log.Printf("Failed to accept stream from intermediate server: %v", err)
+			return
+		}
+
+		log.Printf("Accepted stream from intermediate server for audio relay")
+
+		// Handle audio relay stream
+		go func(s *quic.Stream) {
+			defer s.Close()
+
+			audioReceiver := NewAudioReceiver(s)
+			if err := audioReceiver.ReceiveAudio(); err != nil {
+				log.Printf("Failed to receive relayed audio stream: %v", err)
+			}
+		}(stream)
+	}
 }
 
 func (c *Client) setupTransport() error {
