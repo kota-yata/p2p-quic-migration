@@ -126,20 +126,20 @@ func (c *Client) waitForSession() {
 
 func (c *Client) handleNetworkChange(oldAddr, newAddr string) {
 	log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
-	
+
 	if c.intermediateConn == nil {
 		log.Println("No intermediate connection available for network change")
 		return
 	}
-	
+
 	// Perform connection migration to the new network interface
 	if err := c.migrateConnection(newAddr); err != nil {
 		log.Printf("Failed to migrate connection: %v", err)
 		return
 	}
-	
+
 	log.Printf("Successfully migrated connection to new address: %s", newAddr)
-	
+
 	// After successful migration, notify the intermediate server about the address change
 	if err := c.sendNetworkChangeNotification(oldAddr, newAddr); err != nil {
 		log.Printf("Failed to send network change notification after migration: %v", err)
@@ -152,30 +152,30 @@ func (c *Client) migrateConnection(newAddr string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection: %v", err)
 	}
-	
+
 	// Create a new transport for the new network path
 	newTransport := &quic.Transport{
 		Conn: newUDPConn,
 	}
-	
+
 	// Add the new path to the existing connection
 	path, err := c.intermediateConn.AddPath(newTransport)
 	if err != nil {
 		newUDPConn.Close()
 		return fmt.Errorf("failed to add new path: %v", err)
 	}
-	
+
 	// Probe the new path to ensure it works
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	log.Printf("Probing new path to %s", newAddr)
 	if err := path.Probe(ctx); err != nil {
 		path.Close()
 		newUDPConn.Close()
 		return fmt.Errorf("failed to probe new path: %v", err)
 	}
-	
+
 	// Switch to the new path
 	log.Printf("Switching to new path")
 	if err := path.Switch(); err != nil {
@@ -183,15 +183,15 @@ func (c *Client) migrateConnection(newAddr string) error {
 		newUDPConn.Close()
 		return fmt.Errorf("failed to switch to new path: %v", err)
 	}
-	
+
 	// Store old transport and UDP connection for cleanup after successful migration
 	oldTransport := c.transport
 	oldUDPConn := c.udpConn
-	
+
 	// Update the client's transport and UDP connection
 	c.transport = newTransport
 	c.udpConn = newUDPConn
-	
+
 	// Clean up old transport and connection after a delay to allow migration to complete
 	go func() {
 		time.Sleep(1 * time.Second)
@@ -202,35 +202,35 @@ func (c *Client) migrateConnection(newAddr string) error {
 			oldUDPConn.Close()
 		}
 	}()
-	
+
 	return nil
 }
 
 func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
 	// Wait a moment for migration to stabilize
 	time.Sleep(500 * time.Millisecond)
-	
+
 	// Check if connection is still alive
 	if c.intermediateConn.Context().Err() != nil {
 		return fmt.Errorf("connection is closed")
 	}
-	
+
 	// Open a new stream on the migrated connection to send the notification
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	
+
 	stream, err := c.intermediateConn.OpenStreamSync(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open stream: %v", err)
 	}
 	defer stream.Close()
-	
+
 	notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldAddr, newAddr)
 	_, err = stream.Write([]byte(notification))
 	if err != nil {
 		return fmt.Errorf("failed to write notification: %v", err)
 	}
-	
+
 	log.Printf("Sent network change notification to intermediate server")
 	return nil
 }
