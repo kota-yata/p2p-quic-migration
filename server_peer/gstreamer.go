@@ -75,8 +75,6 @@ func (as *AudioStreamer) StreamAudio() error {
 			return fmt.Errorf("failed to read from gstreamer after %d reads: %v", readCount, err)
 		}
 
-		log.Printf("Read attempt %d: got %d bytes from GStreamer", readCount, n)
-
 		if n > 0 {
 			written, err := as.stream.Write(buffer[:n])
 			if err != nil {
