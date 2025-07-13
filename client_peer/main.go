@@ -146,7 +146,6 @@ func (c *Client) handleNetworkChange(oldAddr, newAddr string) {
 	}
 }
 
-
 func (c *Client) migrateConnection(newAddr string) error {
 	// Check if the connection is still alive before attempting migration
 	if c.intermediateConn.Context().Err() != nil {
@@ -228,8 +227,8 @@ func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
 	}
 
 	// Get the full address including port from the connection
-	oldFullAddr := oldAddr + ":0" // We don't have the old port, use placeholder
-	newFullAddr := c.intermediateConn.LocalAddr().String() // This includes the port
+	oldFullAddr := oldAddr + ":0"                          // We don't have the old port, use placeholder
+	newFullAddr := c.intermediateConn.LocalAddr().String() // This includes the port from migrated connection
 
 	// Open a new stream on the migrated connection to send the notification
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -248,92 +247,6 @@ func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
 	}
 
 	log.Printf("Sent network change notification to intermediate server: %s -> %s", oldFullAddr, newFullAddr)
-	return nil
-}
-
-func connectToPeer(peerAddr string, tr *quic.Transport, tlsConfig *tls.Config, quicConfig *quic.Config) {
-	conn, err := establishConnection(peerAddr, tr, tlsConfig, quicConfig)
-	if err != nil {
-		log.Printf("Failed to establish connection to peer %s: %v", peerAddr, err)
-		return
-	}
-	defer conn.CloseWithError(0, "")
-
-	signalConnectionEstablished()
-
-	if err := handlePeerCommunication(conn, peerAddr); err != nil {
-		log.Printf("Peer communication failed: %v", err)
-	}
-}
-
-func establishConnection(peerAddr string, tr *quic.Transport, tlsConfig *tls.Config, quicConfig *quic.Config) (*quic.Conn, error) {
-	log.Printf("Attempting to connect to peer at %s (will retry up to %d times)", peerAddr, maxRetries)
-
-	peerAddrResolved, err := net.ResolveUDPAddr("udp", peerAddr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve peer address %s: %v", peerAddr, err)
-	}
-
-	var conn *quic.Conn
-	var lastErr error
-
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		log.Printf("Connection attempt %d/%d to peer %s", attempt, maxRetries, peerAddr)
-
-		ctx, cancel := context.WithTimeout(context.Background(), connectionTimeout)
-		conn, err = tr.Dial(ctx, peerAddrResolved, tlsConfig, quicConfig)
-		cancel()
-
-		if err == nil {
-			log.Printf("Successfully connected to peer %s on attempt %d", peerAddr, attempt)
-			return conn, nil
-		}
-
-		lastErr = err
-		log.Printf("Connection attempt %d/%d to peer %s failed: %v", attempt, maxRetries, peerAddr, err)
-
-		if attempt < maxRetries {
-			backoffDuration := calculateBackoff(attempt)
-			log.Printf("Waiting %v before retry attempt %d", backoffDuration, attempt+1)
-			time.Sleep(backoffDuration)
-		}
-	}
-
-	return nil, fmt.Errorf("all %d connection attempts failed. Last error: %v", maxRetries, lastErr)
-}
-
-func calculateBackoff(attempt int) time.Duration {
-	backoffDuration := time.Duration(1<<uint(attempt-1)) * time.Second
-	if backoffDuration > 30*time.Second {
-		backoffDuration = 30 * time.Second
-	}
-	return backoffDuration
-}
-
-func signalConnectionEstablished() {
-	select {
-	case clientConnectionEstablished <- true:
-		log.Printf("Connection established - signaling to stop hole punching")
-	default:
-		// Channel already has a value, which is fine
-	}
-}
-
-func handlePeerCommunication(conn *quic.Conn, peerAddr string) error {
-	stream, err := conn.OpenStreamSync(context.Background())
-	if err != nil {
-		return fmt.Errorf("failed to open stream to peer %s: %v", peerAddr, err)
-	}
-	defer stream.Close()
-
-	log.Printf("Starting to receive audio stream from peer %s", peerAddr)
-
-	audioReceiver := NewAudioReceiver(stream)
-	if err := audioReceiver.ReceiveAudio(); err != nil {
-		return fmt.Errorf("failed to receive audio stream: %v", err)
-	}
-
-	log.Printf("Audio reception from %s completed successfully!", peerAddr)
 	return nil
 }
 
