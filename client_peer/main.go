@@ -43,11 +43,13 @@ func main() {
 }
 
 type Client struct {
-	serverAddr string
-	tlsConfig  *tls.Config
-	quicConfig *quic.Config
-	transport  *quic.Transport
-	udpConn    *net.UDPConn
+	serverAddr      string
+	tlsConfig       *tls.Config
+	quicConfig      *quic.Config
+	transport       *quic.Transport
+	udpConn         *net.UDPConn
+	networkMonitor  *NetworkMonitor
+	intermediateConn *quic.Conn
 }
 
 func createTLSConfig() *tls.Config {
@@ -76,8 +78,15 @@ func (c *Client) Run() error {
 		return fmt.Errorf("failed to connect to intermediate server: %v", err)
 	}
 	defer intermediateConn.CloseWithError(0, "")
+	c.intermediateConn = intermediateConn
 
 	intermediateClient.WaitForObservedAddress(intermediateConn)
+
+	c.networkMonitor = NewNetworkMonitor(c.handleNetworkChange)
+	if err := c.networkMonitor.Start(); err != nil {
+		return fmt.Errorf("failed to start network monitor: %v", err)
+	}
+	defer c.networkMonitor.Stop()
 
 	peerHandler := NewClientPeerHandler(c.transport, c.tlsConfig, c.quicConfig)
 	go intermediateClient.ManagePeerDiscovery(intermediateConn, peerHandler)
@@ -113,6 +122,36 @@ func (c *Client) waitForSession() {
 	case <-context.Background().Done():
 		log.Println("Context cancelled")
 	}
+}
+
+func (c *Client) handleNetworkChange(oldAddr, newAddr string) {
+	log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
+	
+	if c.intermediateConn == nil {
+		log.Println("No intermediate connection available for network change notification")
+		return
+	}
+	
+	if err := c.sendNetworkChangeNotification(oldAddr, newAddr); err != nil {
+		log.Printf("Failed to send network change notification: %v", err)
+	}
+}
+
+func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
+	stream, err := c.intermediateConn.OpenStreamSync(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to open stream: %v", err)
+	}
+	defer stream.Close()
+	
+	notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldAddr, newAddr)
+	_, err = stream.Write([]byte(notification))
+	if err != nil {
+		return fmt.Errorf("failed to write notification: %v", err)
+	}
+	
+	log.Printf("Sent network change notification to intermediate server")
+	return nil
 }
 
 func connectToPeer(peerAddr string, tr *quic.Transport, tlsConfig *tls.Config, quicConfig *quic.Config) {

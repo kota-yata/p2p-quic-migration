@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,6 +130,64 @@ func (pr *PeerRegistry) notifyPeersAboutNewPeer(newPeerID string, newPeerInfo *s
 	}
 }
 
+func (pr *PeerRegistry) handleNetworkChange(message, peerID string) {
+	parts := strings.Split(message, "|")
+	if len(parts) != 3 {
+		log.Printf("Invalid network change message format from %s: %s", peerID, message)
+		return
+	}
+	
+	oldAddr := parts[1]
+	newAddr := parts[2]
+	
+	log.Printf("Network change detected for peer %s: %s -> %s", peerID, oldAddr, newAddr)
+	
+	// Update peer's address in registry
+	pr.mu.Lock()
+	if peer, exists := pr.peers[peerID]; exists {
+		peer.Address = newAddr
+		peer.LastSeen = time.Now()
+	}
+	pr.mu.Unlock()
+	
+	// Notify other peers about the network change
+	pr.notifyPeersAboutNetworkChange(peerID, oldAddr, newAddr)
+}
+
+func (pr *PeerRegistry) notifyPeersAboutNetworkChange(changedPeerID, oldAddr, newAddr string) {
+	pr.mu.RLock()
+	defer pr.mu.RUnlock()
+
+	notification := shared.NetworkChangeNotification{
+		Type:       "NETWORK_CHANGE",
+		PeerID:     changedPeerID,
+		OldAddress: oldAddr,
+		NewAddress: newAddr,
+	}
+
+	notificationData, err := json.Marshal(notification)
+	if err != nil {
+		log.Printf("Failed to marshal network change notification: %v", err)
+		return
+	}
+
+	for peerID, stream := range pr.notificationStreams {
+		if peerID == changedPeerID {
+			continue // Don't notify the peer about its own change
+		}
+
+		go func(peerID string, stream *quic.Stream) {
+			_, err := stream.Write(notificationData)
+			if err != nil {
+				log.Printf("Failed to send network change notification to %s: %v", peerID, err)
+				return
+			}
+
+			log.Printf("Sent network change notification to %s about %s", peerID, changedPeerID)
+		}(peerID, stream)
+	}
+}
+
 var registry *PeerRegistry
 
 func main() {
@@ -212,6 +271,11 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 		log.Printf("Received data from %s: %s", conn.RemoteAddr(), message)
 
 		// Handle different types of requests
+		if strings.HasPrefix(message, "NETWORK_CHANGE|") {
+			registry.handleNetworkChange(message, peerID)
+			continue
+		}
+		
 		switch message {
 		case "GET_PEERS":
 			allPeers := registry.GetPeers()

@@ -13,3 +13,10 @@ type PeerNotification struct {
 	Type string    `json:"type"`
 	Peer *PeerInfo `json:"peer"`
 }
+
+type NetworkChangeNotification struct {
+	Type       string `json:"type"`
+	PeerID     string `json:"peer_id"`
+	OldAddress string `json:"old_address"`
+	NewAddress string `json:"new_address"`
+}
