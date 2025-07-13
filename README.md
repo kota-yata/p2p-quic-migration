@@ -17,8 +17,6 @@ make intermediate
 make certs
 # Build binaries
 make build
-# Test if GStreamer pipeline works
-make gs-test
 ```
 
 1. Run `make intermediate` somewhere  
