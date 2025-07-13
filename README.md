@@ -16,7 +16,14 @@ sudo apt install gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugi
 
 **macOS (using Homebrew):**
 ```bash
-brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
+brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly glib gobject-introspection
+```
+
+**Note for macOS:** If you see GLib warnings like "Failed to load shared library 'libgobject-2.0.0.dylib'", install additional dependencies and set variables:
+```bash
+brew install glib gobject-introspection
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/glib/lib:$DYLD_LIBRARY_PATH"
+export GI_TYPELIB_PATH="/opt/homebrew/lib/girepository-1.0:$GI_TYPELIB_PATH"
 ```
 
 **Verify Installation:**
