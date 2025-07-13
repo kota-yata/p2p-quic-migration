@@ -6,6 +6,6 @@ bin/
 **/*.mp4
 # **/*.mp3
 
-**/client_peer
-**/server_peer
-**/intermediate
+client_peer/client_peer
+server_peer/server_peer
+intermediate/intermediate
