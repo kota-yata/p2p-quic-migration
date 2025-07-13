@@ -12,7 +12,7 @@ import (
 
 var (
 	globalAudioPosition int64
-	positionMutex      sync.RWMutex
+	positionMutex       sync.RWMutex
 )
 
 type AudioStreamer struct {
@@ -48,9 +48,9 @@ func updateAudioPosition(position int64) {
 
 func (as *AudioStreamer) StreamAudio() error {
 	var cmd *exec.Cmd
-	
+
 	log.Printf("Starting audio from beginning (position tracking will resume from current transmission)")
-	
+
 	cmd = exec.Command("gst-launch-1.0",
 		"filesrc", "location=../static/output.mp3", "!",
 		"decodebin", "!",
@@ -93,7 +93,7 @@ func (as *AudioStreamer) StreamAudio() error {
 	totalBytesSent := int64(0)
 	totalBytesRead := int64(0)
 	readCount := 0
-	
+
 	log.Printf("Will skip %d bytes to resume from correct position", as.startBytes)
 
 	for {
@@ -110,12 +110,11 @@ func (as *AudioStreamer) StreamAudio() error {
 
 		if n > 0 {
 			totalBytesRead += int64(n)
-			
+
 			if totalBytesRead <= as.startBytes {
-				log.Printf("Skipping %d bytes (total skipped: %d/%d)", n, totalBytesRead, as.startBytes)
 				continue
 			}
-			
+
 			var dataToSend []byte
 			if totalBytesRead-int64(n) < as.startBytes {
 				skipInThisBuffer := as.startBytes - (totalBytesRead - int64(n))
@@ -124,14 +123,14 @@ func (as *AudioStreamer) StreamAudio() error {
 			} else {
 				dataToSend = buffer[:n]
 			}
-			
+
 			if len(dataToSend) > 0 {
 				written, err := as.stream.Write(dataToSend)
 				if err != nil {
 					return fmt.Errorf("failed to write audio data to stream after %d bytes: %v", totalBytesSent, err)
 				}
 				totalBytesSent += int64(written)
-				
+
 				updateAudioPosition(as.startBytes + totalBytesSent)
 
 				if totalBytesSent%262144 == 0 {
@@ -152,4 +151,3 @@ func (as *AudioStreamer) StreamAudio() error {
 	log.Printf("Audio streaming completed successfully. Total bytes sent: %d", totalBytesSent)
 	return nil
 }
-
