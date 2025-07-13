@@ -25,7 +25,6 @@ const (
 )
 
 var holePunchCompleted = make(chan bool, 1)
-var globalNetworkChangeCallback func()
 
 func main() {
 	serverAddr := flag.String("serverAddr", "203.178.143.72:12345", "Address to the intermediary server")
@@ -43,15 +42,14 @@ func main() {
 }
 
 type Client struct {
-	serverAddr           string
-	tlsConfig            *tls.Config
-	quicConfig           *quic.Config
-	transport            *quic.Transport
-	udpConn              *net.UDPConn
-	networkMonitor       *NetworkMonitor
-	intermediateConn     *quic.Conn
-	peerHandler          *ClientPeerHandler
-	networkChangePending bool
+	serverAddr       string
+	tlsConfig        *tls.Config
+	quicConfig       *quic.Config
+	transport        *quic.Transport
+	udpConn          *net.UDPConn
+	networkMonitor   *NetworkMonitor
+	intermediateConn *quic.Conn
+	peerHandler      *ClientPeerHandler
 }
 
 func createTLSConfig() *tls.Config {
@@ -90,13 +88,6 @@ func (c *Client) Run() error {
 	}
 	defer c.networkMonitor.Stop()
 
-	// Set up global callback for network change detection
-	globalNetworkChangeCallback = func() {
-		if c.networkMonitor != nil {
-			c.networkMonitor.TriggerNetworkChangeCheck()
-		}
-	}
-
 	peerHandler := NewClientPeerHandler(c.transport, c.tlsConfig, c.quicConfig)
 	c.peerHandler = peerHandler
 	go intermediateClient.ManagePeerDiscovery(intermediateConn, peerHandler)
@@ -125,12 +116,7 @@ func (c *Client) handleIntermediateStreams(conn *quic.Conn) {
 			}()
 
 			log.Printf("Starting to receive relayed audio from intermediate server")
-			audioReceiver := NewAudioReceiverWithFailureCallback(s, func() {
-				log.Printf("Relayed audio stream failed, triggering immediate network change detection")
-				if globalNetworkChangeCallback != nil {
-					globalNetworkChangeCallback()
-				}
-			})
+			audioReceiver := NewAudioReceiver(s)
 			if err := audioReceiver.ReceiveAudio(); err != nil {
 				log.Printf("Failed to receive relayed audio stream: %v", err)
 			} else {
@@ -172,20 +158,10 @@ func (c *Client) waitForSession() {
 func (c *Client) handleNetworkChange(oldAddr, newAddr string) {
 	log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
 
-	if c.networkChangePending {
-		log.Printf("Network change already in progress, skipping duplicate trigger")
-		return
-	}
-
 	if c.intermediateConn == nil {
 		log.Println("No intermediate connection available for network change")
 		return
 	}
-
-	c.networkChangePending = true
-	defer func() {
-		c.networkChangePending = false
-	}()
 
 	// Perform connection migration to the new network interface
 	if err := c.migrateConnection(newAddr); err != nil {
@@ -231,13 +207,15 @@ func (c *Client) migrateConnection(newAddr string) error {
 	}
 
 	// Probe the new path to ensure it works
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	log.Printf("Probing new path from %s to intermediate server", newAddr)
-	if err := path.Probe(ctx); err != nil {
-		newUDPConn.Close()
-		return fmt.Errorf("failed to probe new path: %v", err)
+	probeErr := path.Probe(ctx)
+	if probeErr != nil {
+		log.Printf("Path probing failed after 5 seconds: %v", probeErr)
+		// Don't fail migration immediately, try switching anyway as some networks don't respond to probes
+		log.Printf("Attempting to switch to new path despite probe failure")
 	} else {
 		log.Printf("Path probing succeeded")
 	}
@@ -276,10 +254,6 @@ func (c *Client) migrateConnection(newAddr string) error {
 }
 
 func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
-	// Wait a moment for migration to stabilize
-	time.Sleep(500 * time.Millisecond)
-
-	// Check if connection is still alive
 	if c.intermediateConn.Context().Err() != nil {
 		return fmt.Errorf("connection is closed")
 	}
@@ -360,12 +334,7 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 
 			log.Printf("Accepted stream from server, starting to receive audio stream from peer %s", peerAddr)
 
-			audioReceiver := NewAudioReceiverWithFailureCallback(stream, func() {
-				log.Printf("Audio stream failed, triggering immediate network change detection")
-				if globalNetworkChangeCallback != nil {
-					globalNetworkChangeCallback()
-				}
-			})
+			audioReceiver := NewAudioReceiver(stream)
 			if err := audioReceiver.ReceiveAudio(); err != nil {
 				log.Printf("Failed to receive audio stream: %v", err)
 				return

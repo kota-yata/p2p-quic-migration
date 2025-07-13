@@ -10,20 +10,12 @@ import (
 )
 
 type AudioReceiver struct {
-	stream           *quic.Stream
-	onStreamFailure  func()
+	stream *quic.Stream
 }
 
 func NewAudioReceiver(stream *quic.Stream) *AudioReceiver {
 	return &AudioReceiver{
 		stream: stream,
-	}
-}
-
-func NewAudioReceiverWithFailureCallback(stream *quic.Stream, onStreamFailure func()) *AudioReceiver {
-	return &AudioReceiver{
-		stream:          stream,
-		onStreamFailure: onStreamFailure,
 	}
 }
 
@@ -75,10 +67,6 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 			if err == io.EOF {
 				log.Printf("Audio stream reception completed. Total bytes received: %d", totalBytes)
 				break
-			}
-			log.Printf("Failed to receive audio stream: %v", err)
-			if ar.onStreamFailure != nil {
-				ar.onStreamFailure()
 			}
 			return fmt.Errorf("failed to read from stream: %v", err)
 		}
