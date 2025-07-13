@@ -8,7 +8,6 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-// ClientPeerHandler implements the PeerHandler interface for client-specific behavior
 type ClientPeerHandler struct {
 	transport    *quic.Transport
 	tlsConfig    *tls.Config
@@ -44,7 +43,6 @@ func (cph *ClientPeerHandler) HandleNewPeer(peer shared.PeerInfo) {
 }
 
 func (cph *ClientPeerHandler) connectToPeerWithDelay(peerAddr string) {
-	// No longer needed - hole punching will handle the connection directly
 	log.Printf("Connection will be established during hole punching to %s", peerAddr)
 	cph.hasConnected = true
 }

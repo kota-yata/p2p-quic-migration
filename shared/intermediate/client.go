@@ -18,7 +18,6 @@ const (
 	observedAddressMaxRetries = 10
 )
 
-// Client handles communication with the intermediate server for peer discovery
 type Client struct {
 	serverAddr string
 	tlsConfig  *tls.Config
@@ -90,13 +89,11 @@ func (c *Client) sendPeerRequest(stream *quic.Stream) error {
 	return nil
 }
 
-// PeerHandler interface defines how peers are handled differently by client and server
 type PeerHandler interface {
 	HandleInitialPeers(peers []shared.PeerInfo)
 	HandleNewPeer(peer shared.PeerInfo)
 }
 
-// NetworkChangeHandler interface for handling network change notifications
 type NetworkChangeHandler interface {
 	HandleNetworkChange(peerID, oldAddr, newAddr string)
 }
@@ -141,7 +138,6 @@ func (pm *PeerManager) handleInitialPeerList(data []byte) {
 }
 
 func (pm *PeerManager) handlePeerNotification(data []byte) {
-	// Try to unmarshal as regular peer notification first
 	var peerNotification shared.PeerNotification
 	if err := json.Unmarshal(data, &peerNotification); err == nil && peerNotification.Type == "NEW_PEER" {
 		log.Printf("Received peer notification - Type: %s, Peer: %s (Address: %s)",
@@ -150,12 +146,11 @@ func (pm *PeerManager) handlePeerNotification(data []byte) {
 		return
 	}
 
-	// Try to unmarshal as network change notification
 	var networkNotification shared.NetworkChangeNotification
 	if err := json.Unmarshal(data, &networkNotification); err == nil && networkNotification.Type == "NETWORK_CHANGE" {
 		log.Printf("Received network change notification - Peer: %s, %s -> %s",
 			networkNotification.PeerID, networkNotification.OldAddress, networkNotification.NewAddress)
-		
+
 		if networkHandler, ok := pm.peerHandler.(NetworkChangeHandler); ok {
 			networkHandler.HandleNetworkChange(networkNotification.PeerID, networkNotification.OldAddress, networkNotification.NewAddress)
 		}

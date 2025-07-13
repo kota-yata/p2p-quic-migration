@@ -22,7 +22,6 @@ func NewAudioReceiver(stream *quic.Stream) *AudioReceiver {
 func (ar *AudioReceiver) ReceiveAudio() error {
 	log.Printf("Starting real-time audio playback from stream")
 
-	// Create GStreamer pipeline for real-time audio playback
 	cmd := exec.Command("gst-launch-1.0",
 		"fdsrc", "fd=0", "!",
 		"rawaudioparse", "use-sink-caps=false", "sample-rate=44100", "num-channels=2", "format=pcm", "pcm-format=s16le", "!",
@@ -44,7 +43,6 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 		return fmt.Errorf("failed to start gstreamer playback: %v", err)
 	}
 
-	// Read stderr in background to capture any error messages
 	go func() {
 		buf := make([]byte, 1024)
 		for {
@@ -80,13 +78,12 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 			}
 			totalBytes += int64(written)
 
-			if totalBytes%262144 == 0 { // Log every 256KB
+			if totalBytes%262144 == 0 {
 				log.Printf("Received and playing %.1f MB of audio data", float64(totalBytes)/1048576)
 			}
 		}
 	}
 
-	// Close stdin to signal end of stream
 	stdin.Close()
 
 	if err := cmd.Wait(); err != nil {

@@ -143,7 +143,6 @@ func (s *Server) runPeerListener() error {
 			log.Printf("Accept error: %v", err)
 			continue
 		}
-		// stop the hole punching attempts here
 		connectionEstablished <- true
 
 		go s.handleIncomingConnection(conn)
@@ -152,7 +151,7 @@ func (s *Server) runPeerListener() error {
 
 func (s *Server) handleIncomingConnection(conn *quic.Conn) {
 	log.Print("New Client Connection Accepted. Opening stream for video streaming...")
-	
+
 	stream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
 		log.Printf("Failed to open stream for video streaming: %v", err)
@@ -216,11 +215,8 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 
 	log.Printf("NAT hole punch attempt %d/%d to %s succeeded - keeping connection alive for potential incoming streams", attempt, maxHolePunchAttempts, peerAddr)
 
-	// Keep this connection alive but don't use it for streaming
-	// The client will connect to our listener instead
 	go func() {
 		defer conn.CloseWithError(0, "Hole punch connection closed")
-		// Keep the connection alive for a while
 		time.Sleep(30 * time.Second)
 	}()
 

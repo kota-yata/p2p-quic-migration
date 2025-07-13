@@ -43,7 +43,6 @@ func (as *AudioStreamer) StreamAudio() error {
 		return fmt.Errorf("failed to start gstreamer: %v", err)
 	}
 
-	// Read stderr in background to capture any error messages
 	go func() {
 		buf := make([]byte, 1024)
 		for {
@@ -59,7 +58,7 @@ func (as *AudioStreamer) StreamAudio() error {
 
 	log.Printf("GStreamer audio pipeline started, streaming audio data...")
 
-	buffer := make([]byte, 4096) // Smaller buffer for audio streaming
+	buffer := make([]byte, 4096)
 	totalBytesSent := int64(0)
 	readCount := 0
 
@@ -82,13 +81,12 @@ func (as *AudioStreamer) StreamAudio() error {
 			}
 			totalBytesSent += int64(written)
 
-			if totalBytesSent%262144 == 0 { // Log every 256KB for audio
+			if totalBytesSent%262144 == 0 {
 				log.Printf("Sent %.1f MB of audio data", float64(totalBytesSent)/1048576)
 			}
 		}
 	}
 
-	// Ensure all data is flushed before closing
 	if err := as.stream.Close(); err != nil {
 		log.Printf("Error closing stream: %v", err)
 	}

@@ -57,7 +57,6 @@ func (pr *PeerRegistry) AddPeer(id string, addr net.Addr, conn *quic.Conn) {
 	pr.connections[id] = conn
 	log.Printf("Added peer %s with address %s", id, addr.String())
 
-	// Notify existing peers about the new peer
 	go pr.notifyPeersAboutNewPeer(id, peerInfo)
 }
 
@@ -126,7 +125,7 @@ func (pr *PeerRegistry) notifyPeersAboutNewPeer(newPeerID string, newPeerInfo *s
 
 	for peerID, stream := range pr.notificationStreams {
 		if peerID == newPeerID {
-			continue // Don't notify the new peer about itself
+			continue
 		}
 
 		go func(peerID string, stream *quic.Stream) {
@@ -153,7 +152,6 @@ func (pr *PeerRegistry) handleNetworkChange(message, peerID string) {
 
 	log.Printf("Network change detected for peer %s: %s -> %s", peerID, oldAddr, newAddr)
 
-	// Update peer's address in registry
 	pr.mu.Lock()
 	if peer, exists := pr.peers[peerID]; exists {
 		peer.Address = newAddr
@@ -161,11 +159,10 @@ func (pr *PeerRegistry) handleNetworkChange(message, peerID string) {
 	}
 	pr.mu.Unlock()
 
-	// Notify other peers about the network change
 	pr.notifyPeersAboutNetworkChange(peerID, oldAddr, newAddr)
 }
 
-func (pr *PeerRegistry) handleAudioRelay(message, sourcePeerID string, sourceConn *quic.Conn) {
+func (pr *PeerRegistry) handleAudioRelay(message, sourcePeerID string, sourceStream *quic.Stream) {
 	parts := strings.Split(message, "|")
 	if len(parts) != 2 {
 		log.Printf("Invalid audio relay message format from %s: %s", sourcePeerID, message)
@@ -178,46 +175,32 @@ func (pr *PeerRegistry) handleAudioRelay(message, sourcePeerID string, sourceCon
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 
-	// Check if target peer exists and has a connection
 	targetConn, exists := pr.connections[targetPeerID]
 	if !exists {
 		log.Printf("Target peer %s not found for audio relay", targetPeerID)
 		return
 	}
 
-	// Open a stream to the target peer for audio relay
 	targetStream, err := targetConn.OpenStreamSync(context.Background())
 	if err != nil {
 		log.Printf("Failed to open stream to target peer %s: %v", targetPeerID, err)
 		return
 	}
 
-	// Wait for the next stream from source peer (which will contain audio data)
-	go func() {
-		sourceStream, err := sourceConn.AcceptStream(context.Background())
-		if err != nil {
-			log.Printf("Failed to accept audio stream from source peer %s: %v", sourcePeerID, err)
-			targetStream.Close()
-			return
-		}
+	relayID := fmt.Sprintf("%s->%s", sourcePeerID, targetPeerID)
+	relay := &AudioRelaySession{
+		sourcePeerID: sourcePeerID,
+		targetPeerID: targetPeerID,
+		sourceStream: sourceStream,
+		targetStream: targetStream,
+		stopChan:     make(chan bool, 1),
+	}
 
-		// Create audio relay session
-		relayID := fmt.Sprintf("%s->%s", sourcePeerID, targetPeerID)
-		relay := &AudioRelaySession{
-			sourcePeerID: sourcePeerID,
-			targetPeerID: targetPeerID,
-			sourceStream: sourceStream,
-			targetStream: targetStream,
-			stopChan:     make(chan bool, 1),
-		}
+	pr.audioRelays[relayID] = relay
 
-		pr.audioRelays[relayID] = relay
+	go relay.StartRelay()
 
-		// Start the relay
-		relay.StartRelay()
-
-		log.Printf("Audio relay session completed: %s", relayID)
-	}()
+	log.Printf("Audio relay session started: %s", relayID)
 }
 
 func (ars *AudioRelaySession) StartRelay() {
@@ -226,7 +209,6 @@ func (ars *AudioRelaySession) StartRelay() {
 		log.Printf("Audio relay session ended: %s->%s", ars.sourcePeerID, ars.targetPeerID)
 	}()
 
-	// Relay audio data from source to target with optimized buffering
 	buffer := make([]byte, 4096)
 	totalRelayed := int64(0)
 
@@ -246,7 +228,6 @@ func (ars *AudioRelaySession) StartRelay() {
 			}
 
 			if n > 0 {
-				// Write the exact number of bytes read
 				written, err := ars.targetStream.Write(buffer[:n])
 				if err != nil {
 					log.Printf("Audio relay write error: %v", err)
@@ -255,8 +236,7 @@ func (ars *AudioRelaySession) StartRelay() {
 
 				totalRelayed += int64(written)
 
-				// Log progress less frequently to reduce overhead
-				if totalRelayed%262144 == 0 { // Every 256KB
+				if totalRelayed%262144 == 0 {
 					log.Printf("Audio relay progress: %d bytes relayed", totalRelayed)
 				}
 			}
@@ -283,7 +263,7 @@ func (pr *PeerRegistry) notifyPeersAboutNetworkChange(changedPeerID, oldAddr, ne
 
 	for peerID, stream := range pr.notificationStreams {
 		if peerID == changedPeerID {
-			continue // Don't notify the peer about its own change
+			continue
 		}
 
 		go func(peerID string, stream *quic.Stream) {
@@ -319,7 +299,6 @@ func main() {
 	}
 
 	quicConf := &quic.Config{
-		// Set to mode 0: willing to provide address observations but not requesting them
 		AddressDiscoveryMode: 0,
 	}
 
@@ -352,7 +331,6 @@ func handleConnection(conn *quic.Conn) {
 
 	log.Printf("New Connection from: %s", conn.RemoteAddr())
 
-	// Handle incoming streams
 	for {
 		stream, err := conn.AcceptStream(context.Background())
 		if err != nil {
@@ -383,21 +361,19 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 
 		message := string(buffer[:n])
 
-		// Handle different types of requests
 		if strings.HasPrefix(message, "NETWORK_CHANGE|") {
 			registry.handleNetworkChange(message, peerID)
 			continue
 		}
 
 		if strings.HasPrefix(message, "AUDIO_RELAY|") {
-			registry.handleAudioRelay(message, peerID, conn)
-			return // Close this control stream after handling the request
+			registry.handleAudioRelay(message, peerID, stream)
+			return
 		}
 
 		switch message {
 		case "GET_PEERS":
 			allPeers := registry.GetPeers()
-			// Filter out the requesting peer from the response
 			peers := make([]*shared.PeerInfo, 0, len(allPeers))
 			for _, peer := range allPeers {
 				if peer.ID != peerID {
@@ -418,13 +394,10 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 			}
 			log.Printf("Sent peer list to %s: %d peers (excluding self)", conn.RemoteAddr(), len(peers))
 
-			// After sending peer list, register this stream for notifications
 			registry.AddNotificationStream(peerID, stream)
 			log.Printf("Peer %s registered for notifications on the same stream", peerID)
 
-			// Keep the stream open by blocking here
-			// The stream will be used for sending notifications
-			select {} // Block forever until connection closes
+			select {}
 		case "HEARTBEAT":
 			registry.UpdateLastSeen(peerID)
 			_, err = stream.Write([]byte("HEARTBEAT_ACK"))

@@ -90,7 +90,6 @@ func (c *Client) Run() error {
 	peerHandler := NewClientPeerHandler(c.transport, c.tlsConfig, c.quicConfig)
 	go intermediateClient.ManagePeerDiscovery(intermediateConn, peerHandler)
 
-	// Start listening for incoming streams from intermediate server (for audio relay)
 	go c.handleIntermediateStreams(intermediateConn)
 
 	c.waitForSession()
