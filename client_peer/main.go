@@ -196,23 +196,23 @@ func (c *Client) migrateConnection(newAddr string) error {
 	}
 
 	// Store old transport and UDP connection for cleanup after successful migration
-	oldTransport := c.transport
-	oldUDPConn := c.udpConn
+	// oldTransport := c.transport
+	// oldUDPConn := c.udpConn
 
 	// Update the client's transport and UDP connection
 	c.transport = newTransport
 	c.udpConn = newUDPConn
 
 	// Clean up old transport and connection after a delay to allow migration to complete
-	go func() {
-		time.Sleep(1 * time.Second)
-		if oldTransport != nil {
-			oldTransport.Close()
-		}
-		if oldUDPConn != nil {
-			oldUDPConn.Close()
-		}
-	}()
+	// go func() {
+	// 	time.Sleep(1 * time.Second)
+	// 	if oldTransport != nil {
+	// 		oldTransport.Close()
+	// 	}
+	// 	if oldUDPConn != nil {
+	// 		oldUDPConn.Close()
+	// 	}
+	// }()
 
 	return nil
 }
@@ -238,7 +238,7 @@ func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open stream: %v", err)
 	}
-	defer stream.Close()
+	// defer stream.Close()
 
 	notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldFullAddr, newFullAddr)
 	_, err = stream.Write([]byte(notification))
