@@ -43,12 +43,12 @@ func main() {
 }
 
 type Client struct {
-	serverAddr      string
-	tlsConfig       *tls.Config
-	quicConfig      *quic.Config
-	transport       *quic.Transport
-	udpConn         *net.UDPConn
-	networkMonitor  *NetworkMonitor
+	serverAddr       string
+	tlsConfig        *tls.Config
+	quicConfig       *quic.Config
+	transport        *quic.Transport
+	udpConn          *net.UDPConn
+	networkMonitor   *NetworkMonitor
 	intermediateConn *quic.Conn
 }
 
@@ -128,34 +128,68 @@ func (c *Client) handleNetworkChange(oldAddr, newAddr string) {
 	log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
 	
 	if c.intermediateConn == nil {
-		log.Println("No intermediate connection available for network change notification")
+		log.Println("No intermediate connection available for network change")
 		return
 	}
 	
-	if err := c.sendNetworkChangeNotification(oldAddr, newAddr); err != nil {
-		log.Printf("Failed to send network change notification: %v", err)
+	// Perform connection migration to the new network interface
+	if err := c.migrateConnection(newAddr); err != nil {
+		log.Printf("Failed to migrate connection: %v", err)
+		return
 	}
+	
+	log.Printf("Successfully migrated connection to new address: %s", newAddr)
 }
 
-func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
-	stream, err := c.intermediateConn.OpenStreamSync(context.Background())
+func (c *Client) migrateConnection(newAddr string) error {
+	// Create a new UDP connection for the new network interface
+	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(newAddr), Port: 0})
 	if err != nil {
-		return fmt.Errorf("failed to open stream: %v", err)
-	}
-	defer stream.Close()
-	
-	notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldAddr, newAddr)
-	_, err = stream.Write([]byte(notification))
-	if err != nil {
-		return fmt.Errorf("failed to write notification: %v", err)
+		return fmt.Errorf("failed to create new UDP connection: %v", err)
 	}
 	
-	// Close the write side to signal completion
-	stream.Close()
+	// Create a new transport for the new network path
+	newTransport := &quic.Transport{
+		Conn: newUDPConn,
+	}
 	
-	log.Printf("Sent network change notification to intermediate server")
+	// Add the new path to the existing connection
+	path, err := c.intermediateConn.AddPath(newTransport)
+	if err != nil {
+		newUDPConn.Close()
+		return fmt.Errorf("failed to add new path: %v", err)
+	}
+	
+	// Probe the new path to ensure it works
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	log.Printf("Probing new path to %s", newAddr)
+	if err := path.Probe(ctx); err != nil {
+		path.Close()
+		newUDPConn.Close()
+		return fmt.Errorf("failed to probe new path: %v", err)
+	}
+	
+	// Switch to the new path
+	log.Printf("Switching to new path")
+	if err := path.Switch(); err != nil {
+		path.Close()
+		newUDPConn.Close()
+		return fmt.Errorf("failed to switch to new path: %v", err)
+	}
+	
+	// Update the client's transport and UDP connection
+	if c.transport != nil && c.udpConn != nil {
+		c.transport.Close()
+		c.udpConn.Close()
+	}
+	c.transport = newTransport
+	c.udpConn = newUDPConn
+	
 	return nil
 }
+
 
 func connectToPeer(peerAddr string, tr *quic.Transport, tlsConfig *tls.Config, quicConfig *quic.Config) {
 	conn, err := establishConnection(peerAddr, tr, tlsConfig, quicConfig)
