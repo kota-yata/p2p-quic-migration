@@ -30,7 +30,7 @@ If the connection is success, you should hear whatever the sound from static/out
 
 ## How P2P QUIC connection migration works
 ### P2P Connection Establishment
-<img src="./static/conn-establish.png" width="300"/>
+<img src="./static/conn-establish.png" width="500"/>
 
 Steps here are pretty similar to WebRTC's approach, with a bit difference for simplicity.
 
@@ -54,13 +54,16 @@ There are cases where peer's address is changed and the connection no longer per
 This does not quite work in p2p scenarios only because NAT hole punch is required for every p2p connection. The packet from new address does't arrive in the first place blocked by NAT.
 
 This project addresses this problem in a very simple way. When a client peer's address changes, it signals the change to the server peer through the intermediate server. 
-<img src="./static/network-change.png" width="300"/>
+
+<img src="./static/network-change.png" width="500"/>
 
 The server peer then immediately start switch packet transmission from P2P connection to through the intermediate server. During NAT hole punch for the new address, application packets are sent from the server peer to the client peer through the interemediate server.
-<img src="./static/conn-switch.png" width="300"/>
+
+<img src="./static/conn-switch.png" width="500"/>
 
 As soon as the NAT hole punch is done the packet transmission is switched back to using new p2p connection.
-<img src="./static/new-p2p.png" width="300"/>
+
+<img src="./static/new-p2p.png" width="500"/>
 
 This approach is quite generic, meaning this could be applied to WebRTC or other systems. WebRTC handles address change by triggering ICE Restart, which basically does connection establishment step again. ICE Restart takes about 5 seconds or more as far as I've tested, and this project's approach can outperform this.
 
