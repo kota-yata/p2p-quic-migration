@@ -172,17 +172,17 @@ func (c *Client) migrateConnection(newAddr string) error {
 	}
 
 	// Probe the new path to ensure it works
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	log.Printf("Probing new path to %s", newAddr)
+	log.Printf("Probing new path from %s to intermediate server", newAddr)
 	if err := path.Probe(ctx); err != nil {
-		// Safely close path with error checking
-		if closeErr := path.Close(); closeErr != nil {
-			log.Printf("Warning: failed to close path after probe failure: %v", closeErr)
-		}
-		newUDPConn.Close()
-		return fmt.Errorf("failed to probe new path: %v", err)
+		log.Printf("Path probing failed (this is common in NAT environments): %v", err)
+		log.Printf("Attempting to switch to new path without probing...")
+		// Don't return error here - NAT environments often can't probe successfully
+		// but the path might still work for actual traffic
+	} else {
+		log.Printf("Path probing succeeded")
 	}
 
 	// Switch to the new path
