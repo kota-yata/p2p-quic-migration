@@ -184,20 +184,42 @@ func (c *Client) migrateConnection(newAddr string) error {
 		return fmt.Errorf("failed to switch to new path: %v", err)
 	}
 	
+	// Store old transport and UDP connection for cleanup after successful migration
+	oldTransport := c.transport
+	oldUDPConn := c.udpConn
+	
 	// Update the client's transport and UDP connection
-	if c.transport != nil && c.udpConn != nil {
-		c.transport.Close()
-		c.udpConn.Close()
-	}
 	c.transport = newTransport
 	c.udpConn = newUDPConn
+	
+	// Clean up old transport and connection after a delay to allow migration to complete
+	go func() {
+		time.Sleep(1 * time.Second)
+		if oldTransport != nil {
+			oldTransport.Close()
+		}
+		if oldUDPConn != nil {
+			oldUDPConn.Close()
+		}
+	}()
 	
 	return nil
 }
 
 func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
+	// Wait a moment for migration to stabilize
+	time.Sleep(500 * time.Millisecond)
+	
+	// Check if connection is still alive
+	if c.intermediateConn.Context().Err() != nil {
+		return fmt.Errorf("connection is closed")
+	}
+	
 	// Open a new stream on the migrated connection to send the notification
-	stream, err := c.intermediateConn.OpenStreamSync(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	
+	stream, err := c.intermediateConn.OpenStreamSync(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open stream: %v", err)
 	}
