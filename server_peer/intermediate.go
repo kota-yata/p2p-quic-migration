@@ -64,25 +64,32 @@ func (sph *ServerPeerHandler) switchToAudioRelay(targetPeerID string) error {
 		return fmt.Errorf("no intermediate connection available")
 	}
 	
-	// Open a new stream to the intermediate server for audio relay
-	stream, err := sph.intermediateConn.OpenStreamSync(context.Background())
+	// Open a control stream to send the relay request
+	controlStream, err := sph.intermediateConn.OpenStreamSync(context.Background())
 	if err != nil {
-		return fmt.Errorf("failed to open audio relay stream: %v", err)
+		return fmt.Errorf("failed to open control stream: %v", err)
 	}
 	
 	// Send audio relay request
 	relayRequest := fmt.Sprintf("AUDIO_RELAY|%s", targetPeerID)
-	_, err = stream.Write([]byte(relayRequest))
+	_, err = controlStream.Write([]byte(relayRequest))
 	if err != nil {
-		stream.Close()
+		controlStream.Close()
 		return fmt.Errorf("failed to send audio relay request: %v", err)
+	}
+	controlStream.Close() // Close control stream after sending request
+	
+	// Open a separate stream for audio data
+	audioStream, err := sph.intermediateConn.OpenStreamSync(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to open audio stream: %v", err)
 	}
 	
 	log.Printf("Switched to audio relay mode for peer %s", targetPeerID)
 	
 	// Create audio relay handler
 	sph.audioRelay = &AudioRelay{
-		stream:       stream,
+		stream:       audioStream,
 		targetPeerID: targetPeerID,
 	}
 	

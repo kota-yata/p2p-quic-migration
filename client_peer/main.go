@@ -24,7 +24,6 @@ const (
 	maxMessageExchanges   = 10
 )
 
-var clientConnectionEstablished = make(chan bool, 1)
 var holePunchCompleted = make(chan bool, 1)
 
 func main() {
@@ -110,11 +109,17 @@ func (c *Client) handleIntermediateStreams(conn *quic.Conn) {
 
 		// Handle audio relay stream
 		go func(s *quic.Stream) {
-			defer s.Close()
+			defer func() {
+				s.Close()
+				log.Printf("Closed relayed audio stream from intermediate server")
+			}()
 
+			log.Printf("Starting to receive relayed audio from intermediate server")
 			audioReceiver := NewAudioReceiver(s)
 			if err := audioReceiver.ReceiveAudio(); err != nil {
 				log.Printf("Failed to receive relayed audio stream: %v", err)
+			} else {
+				log.Printf("Relayed audio stream completed successfully")
 			}
 		}(stream)
 	}

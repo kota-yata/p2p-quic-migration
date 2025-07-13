@@ -165,7 +165,7 @@ func (pr *PeerRegistry) handleNetworkChange(message, peerID string) {
 	pr.notifyPeersAboutNetworkChange(peerID, oldAddr, newAddr)
 }
 
-func (pr *PeerRegistry) handleAudioRelay(message, sourcePeerID string, sourceStream *quic.Stream) {
+func (pr *PeerRegistry) handleAudioRelay(message, sourcePeerID string, sourceConn *quic.Conn) {
 	parts := strings.Split(message, "|")
 	if len(parts) != 2 {
 		log.Printf("Invalid audio relay message format from %s: %s", sourcePeerID, message)
@@ -182,7 +182,6 @@ func (pr *PeerRegistry) handleAudioRelay(message, sourcePeerID string, sourceStr
 	targetConn, exists := pr.connections[targetPeerID]
 	if !exists {
 		log.Printf("Target peer %s not found for audio relay", targetPeerID)
-		sourceStream.Write([]byte("ERROR: Target peer not found"))
 		return
 	}
 
@@ -190,26 +189,35 @@ func (pr *PeerRegistry) handleAudioRelay(message, sourcePeerID string, sourceStr
 	targetStream, err := targetConn.OpenStreamSync(context.Background())
 	if err != nil {
 		log.Printf("Failed to open stream to target peer %s: %v", targetPeerID, err)
-		sourceStream.Write([]byte("ERROR: Failed to connect to target"))
 		return
 	}
 
-	// Create audio relay session
-	relayID := fmt.Sprintf("%s->%s", sourcePeerID, targetPeerID)
-	relay := &AudioRelaySession{
-		sourcePeerID: sourcePeerID,
-		targetPeerID: targetPeerID,
-		sourceStream: sourceStream,
-		targetStream: targetStream,
-		stopChan:     make(chan bool, 1),
-	}
+	// Wait for the next stream from source peer (which will contain audio data)
+	go func() {
+		sourceStream, err := sourceConn.AcceptStream(context.Background())
+		if err != nil {
+			log.Printf("Failed to accept audio stream from source peer %s: %v", sourcePeerID, err)
+			targetStream.Close()
+			return
+		}
 
-	pr.audioRelays[relayID] = relay
+		// Create audio relay session
+		relayID := fmt.Sprintf("%s->%s", sourcePeerID, targetPeerID)
+		relay := &AudioRelaySession{
+			sourcePeerID: sourcePeerID,
+			targetPeerID: targetPeerID,
+			sourceStream: sourceStream,
+			targetStream: targetStream,
+			stopChan:     make(chan bool, 1),
+		}
 
-	// Start the relay in a goroutine
-	go relay.StartRelay()
+		pr.audioRelays[relayID] = relay
 
-	log.Printf("Audio relay session started: %s", relayID)
+		// Start the relay
+		relay.StartRelay()
+
+		log.Printf("Audio relay session completed: %s", relayID)
+	}()
 }
 
 func (ars *AudioRelaySession) StartRelay() {
@@ -218,8 +226,10 @@ func (ars *AudioRelaySession) StartRelay() {
 		log.Printf("Audio relay session ended: %s->%s", ars.sourcePeerID, ars.targetPeerID)
 	}()
 
-	// Relay audio data from source to target
+	// Relay audio data from source to target with optimized buffering
 	buffer := make([]byte, 4096)
+	totalRelayed := int64(0)
+
 	for {
 		select {
 		case <-ars.stopChan:
@@ -227,15 +237,27 @@ func (ars *AudioRelaySession) StartRelay() {
 		default:
 			n, err := ars.sourceStream.Read(buffer)
 			if err != nil {
-				log.Printf("Audio relay read error: %v", err)
+				if err.Error() == "EOF" {
+					log.Printf("Audio relay source stream ended. Total relayed: %d bytes", totalRelayed)
+				} else {
+					log.Printf("Audio relay read error: %v", err)
+				}
 				return
 			}
 
 			if n > 0 {
-				_, err = ars.targetStream.Write(buffer[:n])
+				// Write the exact number of bytes read
+				written, err := ars.targetStream.Write(buffer[:n])
 				if err != nil {
 					log.Printf("Audio relay write error: %v", err)
 					return
+				}
+
+				totalRelayed += int64(written)
+
+				// Log progress less frequently to reduce overhead
+				if totalRelayed%262144 == 0 { // Every 256KB
+					log.Printf("Audio relay progress: %d bytes relayed", totalRelayed)
 				}
 			}
 		}
@@ -368,8 +390,8 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 		}
 
 		if strings.HasPrefix(message, "AUDIO_RELAY|") {
-			registry.handleAudioRelay(message, peerID, stream)
-			continue
+			registry.handleAudioRelay(message, peerID, conn)
+			return // Close this control stream after handling the request
 		}
 
 		switch message {
