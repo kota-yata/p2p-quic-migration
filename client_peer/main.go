@@ -198,28 +198,15 @@ func (c *Client) migrateConnection(newAddr string) error {
 		return fmt.Errorf("failed to add new path: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	log.Printf("Probing new path from %s to intermediate server", newAddr)
-
-	var probeErr error
-	for attempt := 1; attempt <= 3; attempt++ {
-		probeErr = path.Probe(ctx)
-		if probeErr == nil {
-			log.Printf("Path probing succeeded on attempt %d", attempt)
-			break
-		}
-
-		log.Printf("Path probing attempt %d failed: %v", attempt, probeErr)
-		if attempt < 3 {
-			time.Sleep(500 * time.Millisecond)
-		}
-	}
-
-	if probeErr != nil {
+	if err := path.Probe(ctx); err != nil {
 		newUDPConn.Close()
-		return fmt.Errorf("path probing failed after 3 attempts: %v", probeErr)
+		return fmt.Errorf("failed to probe new path: %v", err)
+	} else {
+		log.Printf("Path probing succeeded")
 	}
 
 	log.Printf("Switching to new path")
