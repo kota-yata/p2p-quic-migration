@@ -3,6 +3,27 @@ P2P QUIC with seamless connection migration.
 
 This project uses a [modified version of quic-go](https://github.com/kota-yata/quic-go). Place this repository and `quic-go` in the same directory hierarchy and it will work (if not, let me know).
 
+## Prerequisites
+
+### GStreamer Installation
+This project requires GStreamer for audio streaming. Install it based on your operating system:
+
+**Ubuntu/Debian:**
+```bash
+sudo apt update
+sudo apt install gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
+```
+
+**macOS (using Homebrew):**
+```bash
+brew install gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad gst-plugins-ugly
+```
+
+**Verify Installation:**
+```bash
+gst-launch-1.0 --version
+```
+
 ## Development  
 My man Claude wrote some nice `make` commands:
 
