@@ -139,6 +139,11 @@ func (c *Client) handleNetworkChange(oldAddr, newAddr string) {
 	}
 	
 	log.Printf("Successfully migrated connection to new address: %s", newAddr)
+	
+	// After successful migration, notify the intermediate server about the address change
+	if err := c.sendNetworkChangeNotification(oldAddr, newAddr); err != nil {
+		log.Printf("Failed to send network change notification after migration: %v", err)
+	}
 }
 
 func (c *Client) migrateConnection(newAddr string) error {
@@ -190,6 +195,23 @@ func (c *Client) migrateConnection(newAddr string) error {
 	return nil
 }
 
+func (c *Client) sendNetworkChangeNotification(oldAddr, newAddr string) error {
+	// Open a new stream on the migrated connection to send the notification
+	stream, err := c.intermediateConn.OpenStreamSync(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to open stream: %v", err)
+	}
+	defer stream.Close()
+	
+	notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldAddr, newAddr)
+	_, err = stream.Write([]byte(notification))
+	if err != nil {
+		return fmt.Errorf("failed to write notification: %v", err)
+	}
+	
+	log.Printf("Sent network change notification to intermediate server")
+	return nil
+}
 
 func connectToPeer(peerAddr string, tr *quic.Transport, tlsConfig *tls.Config, quicConfig *quic.Config) {
 	conn, err := establishConnection(peerAddr, tr, tlsConfig, quicConfig)
