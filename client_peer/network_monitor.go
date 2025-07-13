@@ -11,12 +11,14 @@ type NetworkMonitor struct {
 	currentAddress string
 	onChange       func(oldAddr, newAddr string)
 	stopChan       chan bool
+	triggerChan    chan bool
 }
 
 func NewNetworkMonitor(onChange func(oldAddr, newAddr string)) *NetworkMonitor {
 	return &NetworkMonitor{
-		onChange: onChange,
-		stopChan: make(chan bool),
+		onChange:    onChange,
+		stopChan:    make(chan bool),
+		triggerChan: make(chan bool, 1),
 	}
 }
 
@@ -35,6 +37,15 @@ func (nm *NetworkMonitor) Start() error {
 
 func (nm *NetworkMonitor) Stop() {
 	close(nm.stopChan)
+}
+
+func (nm *NetworkMonitor) TriggerNetworkChangeCheck() {
+	select {
+	case nm.triggerChan <- true:
+		log.Printf("Triggered immediate network change check")
+	default:
+		log.Printf("Network change check already pending")
+	}
 }
 
 func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
@@ -81,21 +92,28 @@ func (nm *NetworkMonitor) monitorLoop() {
 			log.Println("Network monitor stopped")
 			return
 		case <-ticker.C:
-			newAddr, err := nm.getCurrentAddress()
-			if err != nil {
-				log.Printf("Failed to get current address: %v", err)
-				continue
-			}
+			nm.checkNetworkChange()
+		case <-nm.triggerChan:
+			log.Printf("Triggered network change check due to audio stream failure")
+			nm.checkNetworkChange()
+		}
+	}
+}
 
-			if newAddr != nm.currentAddress {
-				log.Printf("Network change detected: %s -> %s", nm.currentAddress, newAddr)
-				oldAddr := nm.currentAddress
-				nm.currentAddress = newAddr
+func (nm *NetworkMonitor) checkNetworkChange() {
+	newAddr, err := nm.getCurrentAddress()
+	if err != nil {
+		log.Printf("Failed to get current address: %v", err)
+		return
+	}
 
-				if nm.onChange != nil {
-					nm.onChange(oldAddr, newAddr)
-				}
-			}
+	if newAddr != nm.currentAddress {
+		log.Printf("Network change detected: %s -> %s", nm.currentAddress, newAddr)
+		oldAddr := nm.currentAddress
+		nm.currentAddress = newAddr
+
+		if nm.onChange != nil {
+			nm.onChange(oldAddr, newAddr)
 		}
 	}
 }
