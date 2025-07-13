@@ -136,12 +136,12 @@ func (pr *PeerRegistry) handleNetworkChange(message, peerID string) {
 		log.Printf("Invalid network change message format from %s: %s", peerID, message)
 		return
 	}
-	
+
 	oldAddr := parts[1]
 	newAddr := parts[2]
-	
+
 	log.Printf("Network change detected for peer %s: %s -> %s", peerID, oldAddr, newAddr)
-	
+
 	// Update peer's address in registry
 	pr.mu.Lock()
 	if peer, exists := pr.peers[peerID]; exists {
@@ -149,7 +149,7 @@ func (pr *PeerRegistry) handleNetworkChange(message, peerID string) {
 		peer.LastSeen = time.Now()
 	}
 	pr.mu.Unlock()
-	
+
 	// Notify other peers about the network change
 	pr.notifyPeersAboutNetworkChange(peerID, oldAddr, newAddr)
 }
@@ -261,6 +261,7 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 
 	buffer := make([]byte, 1024)
 	for {
+		log.Print("Waiting for data on stream...")
 		n, err := stream.Read(buffer)
 		if err != nil {
 			if err.Error() == "EOF" {
@@ -279,7 +280,7 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 			registry.handleNetworkChange(message, peerID)
 			continue
 		}
-		
+
 		switch message {
 		case "GET_PEERS":
 			allPeers := registry.GetPeers()
@@ -307,7 +308,7 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 			// After sending peer list, register this stream for notifications
 			registry.AddNotificationStream(peerID, stream)
 			log.Printf("Peer %s registered for notifications on the same stream", peerID)
-			
+
 			// Keep the stream open by blocking here
 			// The stream will be used for sending notifications
 			select {} // Block forever until connection closes
