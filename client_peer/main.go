@@ -203,10 +203,8 @@ func (c *Client) migrateConnection(newAddr string) error {
 
 	log.Printf("Probing new path from %s to intermediate server", newAddr)
 	if err := path.Probe(ctx); err != nil {
-		log.Printf("Path probing failed: %v, creating new connection", err)
 		newUDPConn.Close()
-		
-		return c.createNewIntermediateConnection(newAddr)
+		return fmt.Errorf("failed to probe new path: %v", err)
 	} else {
 		log.Printf("Path probing succeeded")
 	}
@@ -239,51 +237,6 @@ func (c *Client) migrateConnection(newAddr string) error {
 	// 	}
 	// }()
 
-	return nil
-}
-
-func (c *Client) createNewIntermediateConnection(newAddr string) error {
-	log.Printf("Creating new intermediate connection using new address: %s", newAddr)
-	
-	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(newAddr), Port: 0})
-	if err != nil {
-		return fmt.Errorf("failed to create new UDP connection: %v", err)
-	}
-
-	newTransport := &quic.Transport{
-		Conn: newUDPConn,
-	}
-
-	intermediateClient := intermediate.NewClient(c.serverAddr, c.tlsConfig, c.quicConfig, newTransport)
-	
-	newIntermediateConn, err := intermediateClient.ConnectToServer()
-	if err != nil {
-		newUDPConn.Close()
-		return fmt.Errorf("failed to connect to intermediate server: %v", err)
-	}
-
-	oldConn := c.intermediateConn
-	oldTransport := c.transport
-	oldUDPConn := c.udpConn
-
-	c.intermediateConn = newIntermediateConn
-	c.transport = newTransport
-	c.udpConn = newUDPConn
-
-	go func() {
-		time.Sleep(1 * time.Second)
-		if oldConn != nil {
-			oldConn.CloseWithError(0, "")
-		}
-		if oldTransport != nil {
-			oldTransport.Close()
-		}
-		if oldUDPConn != nil {
-			oldUDPConn.Close()
-		}
-	}()
-
-	log.Printf("Successfully created new intermediate connection")
 	return nil
 }
 
