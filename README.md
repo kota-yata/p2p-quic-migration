@@ -55,6 +55,8 @@ You must run the client and server on different networks unless your router supp
 
 If the connection succeeds, you should hear the sound from `static/output.mp3`.
 
+If you hear the sound, try switching the client's network (WiFi to cellular for example). The sound will be interrupted for like 3 sec and recovered soon.
+
 ## How P2P QUIC Connection Migration Works
 
 ### P2P Connection Establishment  
