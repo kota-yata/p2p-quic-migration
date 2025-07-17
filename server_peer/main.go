@@ -269,16 +269,22 @@ type PeerCommunicator struct {
 }
 
 func (pc *PeerCommunicator) handleMessages() {
-	log.Printf("Starting separate audio and video streams to peer")
+	log.Printf("Starting synchronized audio and video streams to peer")
 
 	audioStreamer := NewAudioStreamer(pc.audioStream)
 	videoStreamer := NewVideoStreamer(pc.videoStream)
 
+	// Create a sync channel to coordinate stream startup
+	syncChan := make(chan bool, 2)
+	
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Start both streams simultaneously
 	go func() {
 		defer wg.Done()
+		syncChan <- true // Signal ready
+		<-syncChan       // Wait for both to be ready
 		if err := audioStreamer.StreamAudio(); err != nil {
 			log.Printf("Audio streaming failed: %v", err)
 		} else {
@@ -288,12 +294,19 @@ func (pc *PeerCommunicator) handleMessages() {
 
 	go func() {
 		defer wg.Done()
+		syncChan <- true // Signal ready
+		<-syncChan       // Wait for both to be ready
 		if err := videoStreamer.StreamVideo(); err != nil {
 			log.Printf("Video streaming failed: %v", err)
 		} else {
 			log.Printf("Video streaming completed successfully")
 		}
 	}()
+
+	// Wait for both goroutines to signal ready, then release both
+	<-syncChan
+	<-syncChan
+	close(syncChan)
 
 	wg.Wait()
 	log.Printf("Both audio and video streaming completed")

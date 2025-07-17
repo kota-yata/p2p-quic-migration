@@ -324,16 +324,22 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 			}
 			defer videoStream.Close()
 
-			log.Printf("Accepted audio and video streams from server, starting reception from peer %s", peerAddr)
+			log.Printf("Accepted audio and video streams from server, starting synchronized reception from peer %s", peerAddr)
 
 			audioReceiver := NewAudioReceiver(audioStream)
 			videoReceiver := NewVideoReceiver(videoStream)
 
+			// Create a sync channel to coordinate playback startup
+			syncChan := make(chan bool, 2)
+
 			var wg sync.WaitGroup
 			wg.Add(2)
 
+			// Start both receivers simultaneously
 			go func() {
 				defer wg.Done()
+				syncChan <- true // Signal ready
+				<-syncChan       // Wait for both to be ready
 				if err := audioReceiver.ReceiveAudio(); err != nil {
 					log.Printf("Failed to receive audio stream: %v", err)
 				} else {
@@ -343,12 +349,19 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 
 			go func() {
 				defer wg.Done()
+				syncChan <- true // Signal ready
+				<-syncChan       // Wait for both to be ready
 				if err := videoReceiver.ReceiveVideo(); err != nil {
 					log.Printf("Failed to receive video stream: %v", err)
 				} else {
 					log.Printf("Video reception completed successfully")
 				}
 			}()
+
+			// Wait for both goroutines to signal ready, then release both
+			<-syncChan
+			<-syncChan
+			close(syncChan)
 
 			wg.Wait()
 			log.Printf("Both audio and video reception from %s completed successfully!", peerAddr)

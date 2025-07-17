@@ -27,7 +27,7 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 		"rawaudioparse", "use-sink-caps=false", "sample-rate=44100", "num-channels=2", "format=pcm", "pcm-format=s16le", "!",
 		"audioconvert", "!",
 		"audioresample", "!",
-		"autoaudiosink", "sync=false")
+		"autoaudiosink", "sync=true")
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -113,7 +113,7 @@ func (vr *VideoReceiver) ReceiveVideo() error {
 		"avdec_h264", "!",
 		"videoconvert", "!",
 		"videoscale", "!",
-		"autovideosink", "sync=false")
+		"autovideosink", "sync=true")
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

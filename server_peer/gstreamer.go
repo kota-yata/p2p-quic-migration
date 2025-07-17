@@ -61,7 +61,7 @@ func (as *AudioStreamer) StreamAudio() error {
 		"audioresample", "!",
 		"audio/x-raw,rate=44100,channels=2,format=S16LE,layout=interleaved", "!",
 		"queue", "max-size-time=1000000000", "!",
-		"fdsink", "fd=1", "sync=false")
+		"fdsink", "fd=1", "sync=true")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -173,7 +173,7 @@ func (vs *VideoStreamer) StreamVideo() error {
 		"h264parse", "!",
 		"video/x-h264,stream-format=byte-stream", "!",
 		"queue", "max-size-time=1000000000", "!",
-		"fdsink", "fd=1", "sync=false")
+		"fdsink", "fd=1", "sync=true")
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
