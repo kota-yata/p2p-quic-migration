@@ -150,19 +150,25 @@ func (s *Server) runPeerListener(peerHandler *ServerPeerHandler) error {
 }
 
 func (s *Server) handleIncomingConnection(conn *quic.Conn, peerHandler *ServerPeerHandler) {
-	log.Print("New Client Connection Accepted. Opening stream for audio streaming...")
+	log.Print("New Client Connection Accepted. Opening streams for audio and video streaming...")
 
-	// Stop any existing audio relay since we now have direct P2P connection
 	peerHandler.StopAudioRelay()
 
-	stream, err := conn.OpenStreamSync(context.Background())
+	audioStream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
-		log.Printf("Failed to open stream for audio streaming: %v", err)
+		log.Printf("Failed to open audio stream: %v", err)
 		return
 	}
 
-	log.Print("Stream opened, starting audio streaming to client via P2P")
-	handlePeerCommunication(stream, conn)
+	videoStream, err := conn.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Printf("Failed to open video stream: %v", err)
+		audioStream.Close()
+		return
+	}
+
+	log.Print("Audio and video streams opened, starting multimedia streaming to client via P2P")
+	handlePeerCommunication(audioStream, videoStream, conn)
 }
 
 func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan bool) {
@@ -241,29 +247,53 @@ func waitBeforeNextHolePunch(attempt int, stopChan chan bool) bool {
 	}
 }
 
-func handlePeerCommunication(stream *quic.Stream, conn *quic.Conn) {
-	defer stream.Close()
+func handlePeerCommunication(audioStream, videoStream *quic.Stream, conn *quic.Conn) {
+	defer audioStream.Close()
+	defer videoStream.Close()
 	log.Printf("Starting peer communication session")
 
 	communicator := &PeerCommunicator{
-		stream: stream,
-		conn:   conn,
+		audioStream: audioStream,
+		videoStream: videoStream,
+		conn:        conn,
 	}
 
 	communicator.handleMessages()
 }
 
 type PeerCommunicator struct {
-	stream *quic.Stream
-	conn   *quic.Conn
+	audioStream *quic.Stream
+	videoStream *quic.Stream
+	conn        *quic.Conn
 }
 
 func (pc *PeerCommunicator) handleMessages() {
-	log.Printf("Starting audio stream to peer")
+	log.Printf("Starting audio and video streams to peer")
 
-	audioStreamer := NewAudioStreamer(pc.stream)
-	if err := audioStreamer.StreamAudio(); err != nil {
-		log.Printf("Audio streaming failed: %v", err)
-		return
+	audioDone := make(chan error, 1)
+	videoDone := make(chan error, 1)
+
+	go func() {
+		audioStreamer := NewAudioStreamer(pc.audioStream)
+		audioDone <- audioStreamer.StreamAudio()
+	}()
+
+	go func() {
+		videoStreamer := NewVideoStreamer(pc.videoStream)
+		videoDone <- videoStreamer.StreamVideo()
+	}()
+
+	audioErr := <-audioDone
+	videoErr := <-videoDone
+
+	if audioErr != nil {
+		log.Printf("Audio streaming failed: %v", audioErr)
+	}
+	if videoErr != nil {
+		log.Printf("Video streaming failed: %v", videoErr)
+	}
+
+	if audioErr == nil && videoErr == nil {
+		log.Printf("Both audio and video streaming completed successfully")
 	}
 }

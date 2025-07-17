@@ -20,6 +20,7 @@ help:
 	@echo "  make clean        - Clean up binaries"
 	@echo "  make deps         - Download dependencies"
 	@echo "  make all          - Run all components in tmux"
+	@echo "  make mp4-test     - Test MP4 video and audio pipelines"
 	@echo ""
 	@echo "Configuration:"
 	@echo "  SERVER_ADDR       - Server address (default: $(SERVER_ADDR))"
@@ -66,3 +67,16 @@ build: deps
 	@cd client_peer && go build -o ../client .
 	@cd server_peer && go build -o ../server .
 	@cd intermediate && go build -o ../intermediate_server .
+
+mp4-test:
+	@echo "Testing MP4 video and audio pipelines..."
+	@echo "Testing MP4 video extraction and H.264 parsing..."
+	@gst-launch-1.0 -v filesrc location=./static/output.mp4 ! qtdemux name=demux demux.video_0 ! queue ! h264parse ! video/x-h264,stream-format=byte-stream ! fakesink 2>/dev/null && echo "Video pipeline test passed" || echo "Video pipeline test failed - check if output.mp4 exists and has video track"
+	@echo "Testing MP4 audio extraction and AAC decoding..."
+	@gst-launch-1.0 -v filesrc location=./static/output.mp4 ! qtdemux name=demux demux.audio_0 ! queue ! aacparse ! avdec_aac ! audioconvert ! fakesink 2>/dev/null && echo "Audio pipeline test passed" || echo "Audio pipeline test failed - check if output.mp4 exists and has audio track"
+	@echo "MP4 pipeline tests completed"
+
+gs-test:
+	@echo "Testing GStreamer audio pipeline..."
+	@gst-launch-1.0 -v filesrc location=./static/output.mp3 ! decodebin ! audioconvert ! audioresample ! audio/x-raw,rate=44100,channels=2,format=S16LE,layout=interleaved ! fakesink 2>/dev/null || echo "Audio test failed"
+	@echo "GStreamer audio test completed"

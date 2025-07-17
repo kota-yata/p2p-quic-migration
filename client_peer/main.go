@@ -309,21 +309,49 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 		go func() {
 			defer conn.CloseWithError(0, "")
 
-			stream, err := conn.AcceptStream(context.Background())
+			audioStream, err := conn.AcceptStream(context.Background())
 			if err != nil {
-				log.Printf("Failed to accept stream from server: %v", err)
+				log.Printf("Failed to accept audio stream from server: %v", err)
 				return
 			}
 
-			log.Printf("Accepted stream from server, starting to receive audio stream from peer %s", peerAddr)
-
-			audioReceiver := NewAudioReceiver(stream)
-			if err := audioReceiver.ReceiveAudio(); err != nil {
-				log.Printf("Failed to receive audio stream: %v", err)
+			videoStream, err := conn.AcceptStream(context.Background())
+			if err != nil {
+				log.Printf("Failed to accept video stream from server: %v", err)
+				audioStream.Close()
 				return
 			}
 
-			log.Printf("Audio reception from %s completed successfully!", peerAddr)
+			log.Printf("Accepted audio and video streams from server, starting multimedia reception from peer %s", peerAddr)
+
+			audioDone := make(chan error, 1)
+			videoDone := make(chan error, 1)
+
+			go func() {
+				defer audioStream.Close()
+				audioReceiver := NewAudioReceiver(audioStream)
+				audioDone <- audioReceiver.ReceiveAudio()
+			}()
+
+			go func() {
+				defer videoStream.Close()
+				videoReceiver := NewVideoReceiver(videoStream)
+				videoDone <- videoReceiver.ReceiveVideo()
+			}()
+
+			audioErr := <-audioDone
+			videoErr := <-videoDone
+
+			if audioErr != nil {
+				log.Printf("Audio reception failed: %v", audioErr)
+			}
+			if videoErr != nil {
+				log.Printf("Video reception failed: %v", videoErr)
+			}
+
+			if audioErr == nil && videoErr == nil {
+				log.Printf("Both audio and video reception from %s completed successfully!", peerAddr)
+			}
 		}()
 
 		select {
