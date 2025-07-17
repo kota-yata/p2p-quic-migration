@@ -56,7 +56,7 @@ func (as *AudioStreamer) StreamAudio() error {
 		"qtdemux", "name=demux", "demux.audio_0", "!",
 		"queue", "!",
 		"aacparse", "!",
-		"avdec_aac", "!",
+		"faad", "!",
 		"audioconvert", "!",
 		"audioresample", "!",
 		"audio/x-raw,rate=44100,channels=2,format=S16LE,layout=interleaved", "!",

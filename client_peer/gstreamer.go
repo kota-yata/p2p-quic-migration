@@ -27,6 +27,7 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 		"rawaudioparse", "use-sink-caps=false", "sample-rate=44100", "num-channels=2", "format=pcm", "pcm-format=s16le", "!",
 		"audioconvert", "!",
 		"audioresample", "!",
+		"queue", "max-size-time=50000000", "leaky=downstream", "!",
 		"autoaudiosink", "sync=true")
 
 	stdin, err := cmd.StdinPipe()
