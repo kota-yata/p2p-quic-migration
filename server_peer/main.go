@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/kota-yata/p2p-quic-migration/shared/intermediate"
@@ -167,7 +168,7 @@ func (s *Server) handleIncomingConnection(conn *quic.Conn, peerHandler *ServerPe
 		return
 	}
 
-	log.Print("Audio and video streams opened, starting multimedia streaming to client via P2P")
+	log.Print("Audio and video streams opened, starting dual streaming to client via P2P")
 	handlePeerCommunication(audioStream, videoStream, conn)
 }
 
@@ -250,7 +251,7 @@ func waitBeforeNextHolePunch(attempt int, stopChan chan bool) bool {
 func handlePeerCommunication(audioStream, videoStream *quic.Stream, conn *quic.Conn) {
 	defer audioStream.Close()
 	defer videoStream.Close()
-	log.Printf("Starting peer communication session")
+	log.Printf("Starting peer communication session with separate audio and video streams")
 
 	communicator := &PeerCommunicator{
 		audioStream: audioStream,
@@ -268,32 +269,32 @@ type PeerCommunicator struct {
 }
 
 func (pc *PeerCommunicator) handleMessages() {
-	log.Printf("Starting audio and video streams to peer")
+	log.Printf("Starting separate audio and video streams to peer")
 
-	audioDone := make(chan error, 1)
-	videoDone := make(chan error, 1)
+	audioStreamer := NewAudioStreamer(pc.audioStream)
+	videoStreamer := NewVideoStreamer(pc.videoStream)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
 
 	go func() {
-		audioStreamer := NewAudioStreamer(pc.audioStream)
-		audioDone <- audioStreamer.StreamAudio()
+		defer wg.Done()
+		if err := audioStreamer.StreamAudio(); err != nil {
+			log.Printf("Audio streaming failed: %v", err)
+		} else {
+			log.Printf("Audio streaming completed successfully")
+		}
 	}()
 
 	go func() {
-		videoStreamer := NewVideoStreamer(pc.videoStream)
-		videoDone <- videoStreamer.StreamVideo()
+		defer wg.Done()
+		if err := videoStreamer.StreamVideo(); err != nil {
+			log.Printf("Video streaming failed: %v", err)
+		} else {
+			log.Printf("Video streaming completed successfully")
+		}
 	}()
 
-	audioErr := <-audioDone
-	videoErr := <-videoDone
-
-	if audioErr != nil {
-		log.Printf("Audio streaming failed: %v", audioErr)
-	}
-	if videoErr != nil {
-		log.Printf("Video streaming failed: %v", videoErr)
-	}
-
-	if audioErr == nil && videoErr == nil {
-		log.Printf("Both audio and video streaming completed successfully")
-	}
+	wg.Wait()
+	log.Printf("Both audio and video streaming completed")
 }

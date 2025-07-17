@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/kota-yata/p2p-quic-migration/shared/intermediate"
@@ -314,44 +315,43 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 				log.Printf("Failed to accept audio stream from server: %v", err)
 				return
 			}
+			defer audioStream.Close()
 
 			videoStream, err := conn.AcceptStream(context.Background())
 			if err != nil {
 				log.Printf("Failed to accept video stream from server: %v", err)
-				audioStream.Close()
 				return
 			}
+			defer videoStream.Close()
 
-			log.Printf("Accepted audio and video streams from server, starting multimedia reception from peer %s", peerAddr)
+			log.Printf("Accepted audio and video streams from server, starting reception from peer %s", peerAddr)
 
-			audioDone := make(chan error, 1)
-			videoDone := make(chan error, 1)
+			audioReceiver := NewAudioReceiver(audioStream)
+			videoReceiver := NewVideoReceiver(videoStream)
+
+			var wg sync.WaitGroup
+			wg.Add(2)
 
 			go func() {
-				defer audioStream.Close()
-				audioReceiver := NewAudioReceiver(audioStream)
-				audioDone <- audioReceiver.ReceiveAudio()
+				defer wg.Done()
+				if err := audioReceiver.ReceiveAudio(); err != nil {
+					log.Printf("Failed to receive audio stream: %v", err)
+				} else {
+					log.Printf("Audio reception completed successfully")
+				}
 			}()
 
 			go func() {
-				defer videoStream.Close()
-				videoReceiver := NewVideoReceiver(videoStream)
-				videoDone <- videoReceiver.ReceiveVideo()
+				defer wg.Done()
+				if err := videoReceiver.ReceiveVideo(); err != nil {
+					log.Printf("Failed to receive video stream: %v", err)
+				} else {
+					log.Printf("Video reception completed successfully")
+				}
 			}()
 
-			audioErr := <-audioDone
-			videoErr := <-videoDone
-
-			if audioErr != nil {
-				log.Printf("Audio reception failed: %v", audioErr)
-			}
-			if videoErr != nil {
-				log.Printf("Video reception failed: %v", videoErr)
-			}
-
-			if audioErr == nil && videoErr == nil {
-				log.Printf("Both audio and video reception from %s completed successfully!", peerAddr)
-			}
+			wg.Wait()
+			log.Printf("Both audio and video reception from %s completed successfully!", peerAddr)
 		}()
 
 		select {
