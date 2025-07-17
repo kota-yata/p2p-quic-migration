@@ -28,7 +28,7 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 		"audioconvert", "!",
 		"audioresample", "!",
 		"queue", "max-size-time=50000000", "leaky=downstream", "!",
-		"autoaudiosink", "sync=true")
+		"autoaudiosink", "sync=false")
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
