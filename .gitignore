@@ -3,7 +3,7 @@
 **/*.key
 **/*.log
 bin/
-**/*.mp4
+# **/*.mp4
 # **/*.mp3
 
 client_peer/client_peer
