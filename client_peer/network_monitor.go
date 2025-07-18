@@ -38,33 +38,23 @@ func (nm *NetworkMonitor) Stop() {
 }
 
 func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
-	interfaces, err := net.Interfaces()
+	// interfaces, err := net.Interfaces()
+	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return "", err
 	}
 
-	for _, iface := range interfaces {
-		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
-			continue
+	for _, addr := range addrs {
+		var ip net.IP
+		switch v := addr.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
 		}
 
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-
-		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-
-			if ip != nil && !ip.IsLoopback() && ip.To4() != nil {
-				return ip.String(), nil
-			}
+		if ip != nil && !ip.IsLoopback() && ip.To4() != nil {
+			return ip.String(), nil
 		}
 	}
 
