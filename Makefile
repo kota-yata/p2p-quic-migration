@@ -5,7 +5,7 @@ INTERMEDIATE_ADDR ?= 203.178.143.72:12345
 CERT_FILE ?= server.crt
 KEY_FILE ?= server.key
 
-.PHONY: help client server intermediate clean all deps cert
+.PHONY: help client server intermediate clean all deps cert network-monitor-test
 
 help:
 	@echo "P2P QUIC Migration - Available targets:"
@@ -21,6 +21,7 @@ help:
 	@echo "  make deps         - Download dependencies"
 	@echo "  make all          - Run all components in tmux"
 	@echo "  make mp4-test     - Test MP4 video and audio pipelines"
+	@echo "  make network-monitor-test - Run network monitor test"
 	@echo ""
 	@echo "Configuration:"
 	@echo "  SERVER_ADDR       - Server address (default: $(SERVER_ADDR))"
@@ -80,3 +81,9 @@ gs-test:
 	@echo "Testing GStreamer audio pipeline..."
 	@gst-launch-1.0 -v filesrc location=./static/output.mp3 ! decodebin ! audioconvert ! audioresample ! audio/x-raw,rate=44100,channels=2,format=S16LE,layout=interleaved ! fakesink 2>/dev/null || echo "Audio test failed"
 	@echo "GStreamer audio test completed"
+
+network-monitor-test: deps
+	@echo "Running network monitor test..."
+	@echo "Turn WiFi on/off to test network change detection"
+	@echo "Press Ctrl+C to stop"
+	cd client_peer && go run -tags=standalone network_monitor_standalone.go network_monitor.go
