@@ -9,3 +9,5 @@ bin/
 client_peer/client_peer
 server_peer/server_peer
 intermediate/intermediate
+
+**/.venv
