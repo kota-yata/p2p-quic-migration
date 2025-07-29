@@ -29,7 +29,6 @@ plt.figure(figsize=(10, 7))
 palette = {"Proposed Method": "lightgreen", "Whereby": "skyblue", "Teams": "lightcoral"}
 ax = sns.boxplot(x='Method', y='Recovery Time (s)', data=df, palette=palette)
 
-plt.title('Comparison of Connection Recovery Time During Network Change')
 plt.xlabel('Method')
 plt.ylabel('Recovery Time (s)')
 plt.grid(axis='y', linestyle='--', alpha=0.7)
