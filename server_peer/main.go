@@ -101,6 +101,8 @@ func (s *Server) setupTLS() error {
 
 	s.quicConfig = &quic.Config{
 		AddressDiscoveryMode: 1,
+		KeepAlivePeriod:      30 * time.Second,
+		MaxIdleTimeout:       5 * time.Minute,
 	}
 
 	return nil
@@ -151,25 +153,14 @@ func (s *Server) runPeerListener(peerHandler *ServerPeerHandler) error {
 }
 
 func (s *Server) handleIncomingConnection(conn *quic.Conn, peerHandler *ServerPeerHandler) {
-	log.Print("New Client Connection Accepted. Opening streams for audio and video streaming...")
+	log.Print("New Peer Connection Accepted. Setting up bidirectional audio and video streaming...")
 
 	peerHandler.StopAudioRelay()
 
-	audioStream, err := conn.OpenStreamSync(context.Background())
-	if err != nil {
-		log.Printf("Failed to open audio stream: %v", err)
-		return
-	}
-
-	videoStream, err := conn.OpenStreamSync(context.Background())
-	if err != nil {
-		log.Printf("Failed to open video stream: %v", err)
-		audioStream.Close()
-		return
-	}
-
-	log.Print("Audio and video streams opened, starting dual streaming to client via P2P")
-	handlePeerCommunication(audioStream, videoStream, conn)
+	// Since we received the connection, we act as the "acceptor"
+	// We accept incoming streams from the initiator and then open our own
+	log.Print("Acting as connection acceptor - waiting for peer streams first")
+	handleBidirectionalCommunicationAsAcceptor(conn)
 }
 
 func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan bool) {
@@ -223,12 +214,10 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 		return nil
 	}
 
-	log.Printf("NAT hole punch attempt %d/%d to %s succeeded - keeping connection alive for potential incoming streams", attempt, maxHolePunchAttempts, peerAddr)
+	log.Printf("NAT hole punch attempt %d/%d to %s succeeded - acting as connection initiator", attempt, maxHolePunchAttempts, peerAddr)
 
-	go func() {
-		defer conn.CloseWithError(0, "Hole punch connection closed")
-		time.Sleep(30 * time.Second)
-	}()
+	// We open streams first and then accept return streams
+	go handleBidirectionalCommunicationAsInitiator(conn, peerAddr)
 
 	return nil
 }
@@ -248,59 +237,154 @@ func waitBeforeNextHolePunch(attempt int, stopChan chan bool) bool {
 	}
 }
 
-func handlePeerCommunication(audioStream, videoStream *quic.Stream, conn *quic.Conn) {
-	defer audioStream.Close()
-	defer videoStream.Close()
-	log.Printf("Starting peer communication session with separate audio and video streams")
+// Initiator: Opens streams first, then accepts return streams
+func handleBidirectionalCommunicationAsInitiator(conn *quic.Conn, peerAddr string) {
+	defer conn.CloseWithError(0, "Initiator session completed")
+	log.Printf("Starting bidirectional communication as initiator with %s", peerAddr)
 
-	communicator := &PeerCommunicator{
-		audioStream: audioStream,
-		videoStream: videoStream,
-		conn:        conn,
+	// First: Open our outgoing streams
+	audioSendStream, err := conn.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Printf("Failed to open outgoing audio stream as initiator: %v", err)
+		return
 	}
+	defer audioSendStream.Close()
 
-	communicator.handleMessages()
-}
+	videoSendStream, err := conn.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Printf("Failed to open outgoing video stream as initiator: %v", err)
+		return
+	}
+	defer videoSendStream.Close()
 
-type PeerCommunicator struct {
-	audioStream *quic.Stream
-	videoStream *quic.Stream
-	conn        *quic.Conn
-}
+	log.Printf("Initiator opened outgoing streams, starting to send audio/video")
 
-func (pc *PeerCommunicator) handleMessages() {
-	log.Printf("Starting synchronized audio and video streams to peer")
+	var wg sync.WaitGroup
 
-	audioStreamer := NewAudioStreamer(pc.audioStream)
-	videoStreamer := NewVideoStreamer(pc.videoStream)
-
-	var startWg sync.WaitGroup
-	var streamWg sync.WaitGroup
-	
-	startWg.Add(2)
-	streamWg.Add(2)
+	// Start sending our audio and video
+	wg.Add(2)
 	go func() {
-		defer streamWg.Done()
-		startWg.Done()
-		startWg.Wait()
+		defer wg.Done()
+		audioStreamer := NewAudioStreamer(audioSendStream)
 		if err := audioStreamer.StreamAudio(); err != nil {
-			log.Printf("Audio streaming failed: %v", err)
-		} else {
-			log.Printf("Audio streaming completed successfully")
+			log.Printf("Initiator audio streaming failed: %v", err)
 		}
 	}()
 
 	go func() {
-		defer streamWg.Done()
-		startWg.Done()
-		startWg.Wait()
+		defer wg.Done()
+		videoStreamer := NewVideoStreamer(videoSendStream)
 		if err := videoStreamer.StreamVideo(); err != nil {
-			log.Printf("Video streaming failed: %v", err)
-		} else {
-			log.Printf("Video streaming completed successfully")
+			log.Printf("Initiator video streaming failed: %v", err)
 		}
 	}()
 
-	streamWg.Wait()
-	log.Printf("Both audio and video streaming completed")
+	// Then: Accept return streams from the acceptor
+	go func() {
+		log.Printf("Initiator waiting for return streams from acceptor...")
+		acceptStreamsFromPeer(conn, "initiator")
+	}()
+
+	wg.Wait()
+	log.Printf("Initiator bidirectional communication completed")
+}
+
+// Acceptor: Accepts streams first, then opens return streams
+func handleBidirectionalCommunicationAsAcceptor(conn *quic.Conn) {
+	log.Printf("Starting bidirectional communication as acceptor")
+
+	// First: Accept incoming streams from initiator
+	go func() {
+		log.Printf("Acceptor waiting for incoming streams from initiator...")
+		acceptStreamsFromPeer(conn, "acceptor")
+	}()
+
+	// Give the acceptor goroutine a moment to start, then open our return streams
+	time.Sleep(100 * time.Millisecond)
+
+	audioSendStream, err := conn.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Printf("Failed to open return audio stream as acceptor: %v", err)
+		return
+	}
+	defer audioSendStream.Close()
+
+	videoSendStream, err := conn.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Printf("Failed to open return video stream as acceptor: %v", err)
+		return
+	}
+	defer videoSendStream.Close()
+
+	log.Printf("Acceptor opened return streams, starting to send audio/video back")
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		audioStreamer := NewAudioStreamer(audioSendStream)
+		if err := audioStreamer.StreamAudio(); err != nil {
+			log.Printf("Acceptor audio streaming failed: %v", err)
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		videoStreamer := NewVideoStreamer(videoSendStream)
+		if err := videoStreamer.StreamVideo(); err != nil {
+			log.Printf("Acceptor video streaming failed: %v", err)
+		}
+	}()
+
+	wg.Wait()
+	log.Printf("Acceptor bidirectional communication completed")
+}
+
+// Common function to accept and handle incoming streams
+func acceptStreamsFromPeer(conn *quic.Conn, role string) {
+	streamCount := 0
+	for {
+		stream, err := conn.AcceptStream(context.Background())
+		if err != nil {
+			log.Printf("%s error accepting incoming stream: %v", role, err)
+			break
+		}
+
+		streamCount++
+		log.Printf("%s accepted incoming stream #%d", role, streamCount)
+
+		if streamCount == 1 {
+			go handleIncomingAudioStream(stream, role)
+		} else if streamCount == 2 {
+			go handleIncomingVideoStream(stream, role)
+		} else {
+			log.Printf("%s unexpected additional stream #%d, closing", role, streamCount)
+			stream.Close()
+		}
+	}
+}
+
+func handleIncomingAudioStream(stream *quic.Stream, role string) {
+	defer stream.Close()
+	log.Printf("%s starting to receive and play incoming audio stream", role)
+
+	audioReceiver := NewAudioReceiver(stream)
+	if err := audioReceiver.ReceiveAudio(); err != nil {
+		log.Printf("%s audio receiving failed: %v", role, err)
+	} else {
+		log.Printf("%s audio receiving completed successfully", role)
+	}
+}
+
+func handleIncomingVideoStream(stream *quic.Stream, role string) {
+	defer stream.Close()
+	log.Printf("%s starting to receive and play incoming video stream", role)
+
+	videoReceiver := NewVideoReceiver(stream)
+	if err := videoReceiver.ReceiveVideo(); err != nil {
+		log.Printf("%s video receiving failed: %v", role, err)
+	} else {
+		log.Printf("%s video receiving completed successfully", role)
+	}
 }

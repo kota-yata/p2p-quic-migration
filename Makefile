@@ -5,7 +5,7 @@ INTERMEDIATE_ADDR ?= 203.178.143.72:12345
 CERT_FILE ?= server.crt
 KEY_FILE ?= server.key
 
-.PHONY: help client server intermediate clean all deps cert network-monitor-test
+.PHONY: help client server intermediate unified-peer unified-server unified-client unified-bidirectional clean all deps cert network-monitor-test
 
 help:
 	@echo "P2P QUIC Migration - Available targets:"
@@ -14,6 +14,12 @@ help:
 	@echo "  make client        - Run the client"
 	@echo "  make server        - Run the server"
 	@echo "  make intermediate  - Run the intermediate server"
+	@echo ""
+	@echo "Unified Peer Commands:"
+	@echo "  make unified-peer        - Run unified peer in bidirectional mode"
+	@echo "  make unified-server      - Run unified peer in server mode"
+	@echo "  make unified-client      - Run unified peer in client mode"
+	@echo "  make unified-bidirectional - Run unified peer in bidirectional mode"
 	@echo ""
 	@echo "Utility Commands:"
 	@echo "  make cert         - Generate certificates"
@@ -87,3 +93,14 @@ network-monitor-test: deps
 	@echo "Turn WiFi on/off to test network change detection"
 	@echo "Press Ctrl+C to stop"
 	cd client_peer && go run -tags=standalone network_monitor_standalone.go network_monitor.go
+
+unified-peer: unified-bidirectional
+
+unified-server: deps cert
+	cd unified_peer && go run . -mode=server -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -listen=":4433"
+
+unified-client: deps
+	cd unified_peer && go run . -mode=client -server="localhost:4433"
+
+unified-bidirectional: deps cert
+	cd unified_peer && go run . -mode=bidirectional -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -listen=":4433" -server="localhost:4434"
