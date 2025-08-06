@@ -217,20 +217,15 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 	ctx, cancel := context.WithTimeout(context.Background(), holePunchTimeout)
 	defer cancel()
 
-	conn, err := tr.Dial(ctx, peerAddrResolved, tlsConfig, quicConfig)
+	_, err = tr.Dial(ctx, peerAddrResolved, tlsConfig, quicConfig)
 
 	if err != nil {
 		log.Printf("NAT hole punch attempt %d/%d to %s completed (connection failed, which is normal): %v", attempt, maxHolePunchAttempts, peerAddr, err)
 		return nil
 	}
 
-	log.Printf("NAT hole punch attempt %d/%d to %s succeeded - keeping connection alive for potential incoming streams", attempt, maxHolePunchAttempts, peerAddr)
-
-	go func() {
-		defer conn.CloseWithError(0, "Hole punch connection closed")
-		time.Sleep(30 * time.Second)
-	}()
-
+	log.Printf("NAT hole punch attempt %d/%d to %s succeeded - NAT hole punched for peer communication", attempt, maxHolePunchAttempts, peerAddr)
+	
 	return nil
 }
 
