@@ -151,25 +151,26 @@ func (s *Server) runPeerListener(peerHandler *ServerPeerHandler) error {
 }
 
 func (s *Server) handleIncomingConnection(conn *quic.Conn, peerHandler *ServerPeerHandler) {
-	log.Print("New Client Connection Accepted. Opening streams for audio and video streaming...")
+	log.Print("New Peer Connection Accepted. Setting up bidirectional audio and video streaming...")
 
 	peerHandler.StopAudioRelay()
 
-	audioStream, err := conn.OpenStreamSync(context.Background())
+	// Open outgoing streams for sending audio/video
+	audioSendStream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
-		log.Printf("Failed to open audio stream: %v", err)
+		log.Printf("Failed to open outgoing audio stream: %v", err)
 		return
 	}
 
-	videoStream, err := conn.OpenStreamSync(context.Background())
+	videoSendStream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
-		log.Printf("Failed to open video stream: %v", err)
-		audioStream.Close()
+		log.Printf("Failed to open outgoing video stream: %v", err)
+		audioSendStream.Close()
 		return
 	}
 
-	log.Print("Audio and video streams opened, starting dual streaming to client via P2P")
-	handlePeerCommunication(audioStream, videoStream, conn)
+	log.Print("Outgoing streams opened, starting bidirectional communication with peer")
+	handleBidirectionalCommunication(audioSendStream, videoSendStream, conn)
 }
 
 func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan bool) {
@@ -248,41 +249,38 @@ func waitBeforeNextHolePunch(attempt int, stopChan chan bool) bool {
 	}
 }
 
-func handlePeerCommunication(audioStream, videoStream *quic.Stream, conn *quic.Conn) {
-	defer audioStream.Close()
-	defer videoStream.Close()
-	log.Printf("Starting peer communication session with separate audio and video streams")
+func handleBidirectionalCommunication(audioSendStream, videoSendStream *quic.Stream, conn *quic.Conn) {
+	defer audioSendStream.Close()
+	defer videoSendStream.Close()
+	log.Printf("Starting bidirectional peer communication session")
 
-	communicator := &PeerCommunicator{
-		audioStream: audioStream,
-		videoStream: videoStream,
-		conn:        conn,
+	communicator := &BidirectionalPeerCommunicator{
+		audioSendStream:  audioSendStream,
+		videoSendStream:  videoSendStream,
+		conn:            conn,
 	}
 
-	communicator.handleMessages()
+	communicator.handleBidirectionalStreams()
 }
 
-type PeerCommunicator struct {
-	audioStream *quic.Stream
-	videoStream *quic.Stream
-	conn        *quic.Conn
+type BidirectionalPeerCommunicator struct {
+	audioSendStream  *quic.Stream
+	videoSendStream  *quic.Stream
+	conn            *quic.Conn
 }
 
-func (pc *PeerCommunicator) handleMessages() {
-	log.Printf("Starting synchronized audio and video streams to peer")
+func (bpc *BidirectionalPeerCommunicator) handleBidirectionalStreams() {
+	log.Printf("Starting bidirectional audio and video streaming")
 
-	audioStreamer := NewAudioStreamer(pc.audioStream)
-	videoStreamer := NewVideoStreamer(pc.videoStream)
-
-	var startWg sync.WaitGroup
-	var streamWg sync.WaitGroup
+	var wg sync.WaitGroup
 	
-	startWg.Add(2)
-	streamWg.Add(2)
+	// Start sending audio and video
+	audioStreamer := NewAudioStreamer(bpc.audioSendStream)
+	videoStreamer := NewVideoStreamer(bpc.videoSendStream)
+
+	wg.Add(2)
 	go func() {
-		defer streamWg.Done()
-		startWg.Done()
-		startWg.Wait()
+		defer wg.Done()
 		if err := audioStreamer.StreamAudio(); err != nil {
 			log.Printf("Audio streaming failed: %v", err)
 		} else {
@@ -291,9 +289,7 @@ func (pc *PeerCommunicator) handleMessages() {
 	}()
 
 	go func() {
-		defer streamWg.Done()
-		startWg.Done()
-		startWg.Wait()
+		defer wg.Done()
 		if err := videoStreamer.StreamVideo(); err != nil {
 			log.Printf("Video streaming failed: %v", err)
 		} else {
@@ -301,6 +297,60 @@ func (pc *PeerCommunicator) handleMessages() {
 		}
 	}()
 
-	streamWg.Wait()
-	log.Printf("Both audio and video streaming completed")
+	// Accept incoming streams for receiving audio and video
+	go bpc.acceptIncomingStreams()
+
+	wg.Wait()
+	log.Printf("Bidirectional streaming completed")
+}
+
+func (bpc *BidirectionalPeerCommunicator) acceptIncomingStreams() {
+	log.Printf("Waiting for incoming audio and video streams from peer...")
+	
+	streamCount := 0
+	for {
+		stream, err := bpc.conn.AcceptStream(context.Background())
+		if err != nil {
+			log.Printf("Error accepting incoming stream: %v", err)
+			break
+		}
+
+		streamCount++
+		log.Printf("Accepted incoming stream #%d", streamCount)
+
+		// For simplicity, assume first stream is audio, second is video
+		// In a production system, you'd want a proper protocol to identify stream types
+		if streamCount == 1 {
+			go bpc.handleIncomingAudio(stream)
+		} else if streamCount == 2 {
+			go bpc.handleIncomingVideo(stream)
+		} else {
+			log.Printf("Unexpected additional stream #%d, closing", streamCount)
+			stream.Close()
+		}
+	}
+}
+
+func (bpc *BidirectionalPeerCommunicator) handleIncomingAudio(stream *quic.Stream) {
+	defer stream.Close()
+	log.Printf("Starting to receive and play incoming audio stream")
+	
+	audioReceiver := NewAudioReceiver(stream)
+	if err := audioReceiver.ReceiveAudio(); err != nil {
+		log.Printf("Audio receiving failed: %v", err)
+	} else {
+		log.Printf("Audio receiving completed successfully")
+	}
+}
+
+func (bpc *BidirectionalPeerCommunicator) handleIncomingVideo(stream *quic.Stream) {
+	defer stream.Close()
+	log.Printf("Starting to receive and play incoming video stream")
+	
+	videoReceiver := NewVideoReceiver(stream)
+	if err := videoReceiver.ReceiveVideo(); err != nil {
+		log.Printf("Video receiving failed: %v", err)
+	} else {
+		log.Printf("Video receiving completed successfully")
+	}
 }
