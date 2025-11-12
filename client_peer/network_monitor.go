@@ -1,15 +1,21 @@
+//go:build darwin
+
 package main
 
 import (
 	"fmt"
 	"log"
 	"net"
-	"time"
+
+	"golang.org/x/sys/unix"
 )
+
+const readBufferSize = 2048
 
 type NetworkMonitor struct {
 	currentAddress string
 	onChange       func(oldAddr, newAddr string)
+	fd             int
 	stopChan       chan bool
 }
 
@@ -17,17 +23,26 @@ func NewNetworkMonitor(onChange func(oldAddr, newAddr string)) *NetworkMonitor {
 	return &NetworkMonitor{
 		onChange: onChange,
 		stopChan: make(chan bool),
+		fd:       -1, // File descriptor for AF_ROUTE socket
 	}
 }
 
 func (nm *NetworkMonitor) Start() error {
+	var err error
+
+	nm.fd, err = unix.Socket(unix.AF_ROUTE, unix.SOCK_RAW, 0)
+	if err != nil {
+		return fmt.Errorf("failed to create AF_ROUTE socket: %v", err)
+	}
+
 	initialAddr, err := nm.getCurrentAddress()
 	if err != nil {
+		unix.Close(nm.fd)
 		return fmt.Errorf("failed to get initial address: %v", err)
 	}
 
 	nm.currentAddress = initialAddr
-	log.Printf("Network monitor started with initial address: %s", initialAddr)
+	log.Printf("Monitor started with initial address: %s", initialAddr)
 
 	go nm.monitorLoop()
 	return nil
@@ -35,10 +50,13 @@ func (nm *NetworkMonitor) Start() error {
 
 func (nm *NetworkMonitor) Stop() {
 	close(nm.stopChan)
+
+	if nm.fd != -1 {
+		unix.Close(nm.fd)
+	}
 }
 
 func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
-	// interfaces, err := net.Interfaces()
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return "", err
@@ -51,6 +69,8 @@ func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
 			ip = v.IP
 		case *net.IPAddr:
 			ip = v.IP
+		default:
+			continue
 		}
 
 		if ip != nil && !ip.IsLoopback() && ip.To4() != nil {
@@ -62,29 +82,39 @@ func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
 }
 
 func (nm *NetworkMonitor) monitorLoop() {
-	ticker := time.NewTicker(3000 * time.Millisecond)
-	defer ticker.Stop()
+	defer log.Println("Network monitor goroutine stopped.")
+
+	buffer := make([]byte, readBufferSize)
 
 	for {
-		select {
-		case <-nm.stopChan:
-			log.Println("Network monitor stopped")
-			return
-		case <-ticker.C:
-			newAddr, err := nm.getCurrentAddress()
-			if err != nil {
-				log.Printf("Failed to get current address: %v", err)
+		n, err := unix.Read(nm.fd, buffer)
+
+		if err != nil {
+			select {
+			case <-nm.stopChan:
+				return
+			default:
+				log.Printf("AF_ROUTE Read error: %v", err)
 				continue
 			}
+		}
 
-			if newAddr != nm.currentAddress {
-				log.Printf("Network change detected: %s -> %s", nm.currentAddress, newAddr)
-				oldAddr := nm.currentAddress
-				nm.currentAddress = newAddr
+		if n == 0 {
+			continue
+		}
 
-				if nm.onChange != nil {
-					nm.onChange(oldAddr, newAddr)
-				}
+		newAddr, err := nm.getCurrentAddress()
+		if err != nil {
+			log.Printf("Failed to get current address: %v. Continuing...", err)
+			continue
+		}
+
+		if newAddr != nm.currentAddress {
+			oldAddr := nm.currentAddress
+			nm.currentAddress = newAddr
+
+			if nm.onChange != nil {
+				nm.onChange(oldAddr, newAddr)
 			}
 		}
 	}
