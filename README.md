@@ -32,37 +32,31 @@ gst-launch-1.0 --version
 ```
 
 ## Development  
-My man Claude wrote some nice `make` commands:
-
 ```bash
-# Run client (peer)
-make client
-# Run server (peer)
-make server
+# Run peer
+make peer
 # Run intermediate server
 make intermediate
 # Generate certs for servers. Running any component with make will automatically run this beforehand
-make certs
+make cert
 # Build binaries
 make build
 ```
 
 1. Run `make intermediate` somewhere  
-2. Run `make server` on a machine behind NAT with your media files at ./static/output.mp4 and ./static/output.mp3
-3. Run `make client` on a machine behind NAT  
+2. Run `make peer` on a machine behind NAT with your media files at ./static/output.mp4 and ./static/output.mp3
+3. Run `make peer` on another machine behind NAT  
 
-You must run the client and server on different networks unless your router supports [NAT loopback](https://nordvpn.com/cybersecurity/glossary/nat-loopback/) (a.k.a. NAT hairpinning).
+You must run the peers on different networks unless your router supports [NAT loopback](https://nordvpn.com/cybersecurity/glossary/nat-loopback/) (a.k.a. NAT hairpinning).
 
-If the connection succeeds, you should see the video and hear the audio from `static/output.mp4`.
-
-If you hear the sound, try switching the client's network (WiFi to cellular for example). The sound will be interrupted for like 3 sec and recovered soon.
+If the connection succeeds, you should see the video and hear the audio from `static/output.mp4`. Then try switching the client's network (WiFi to cellular for example). The sound will be interrupted for like 3 sec and recovered soon.
 
 ## How P2P QUIC Connection Migration Works
 
 ### P2P Connection Establishment  
 <img src="./static/conn-establish.png" width="500"/>
 
-The steps are similar to WebRTC’s approach, with some simplifications.
+This step is quite similar to WebRTC’s approach, with some simplifications.
 
 #### Address Exchange  
 The client peer and server peer first connect to the intermediate server. The intermediate server retrieves each peer’s external address and exchanges them. Once both peers have each other's address, they can begin hole punching.

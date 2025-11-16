@@ -5,41 +5,10 @@ INTERMEDIATE_ADDR ?= 203.178.143.72:12345
 CERT_FILE ?= server.crt
 KEY_FILE ?= server.key
 
-.PHONY: help client server intermediate unified-peer unified-server unified-client unified-bidirectional clean all deps cert network-monitor-test
+.PHONY: peer intermediate unified-peer unified-server unified-client unified-bidirectional clean all deps cert
 
-help:
-	@echo "P2P QUIC Migration - Available targets:"
-	@echo ""
-	@echo "Basic Commands:"
-	@echo "  make client        - Run the client"
-	@echo "  make server        - Run the server"
-	@echo "  make intermediate  - Run the intermediate server"
-	@echo ""
-	@echo "Unified Peer Commands:"
-	@echo "  make unified-peer        - Run unified peer in bidirectional mode"
-	@echo "  make unified-server      - Run unified peer in server mode"
-	@echo "  make unified-client      - Run unified peer in client mode"
-	@echo "  make unified-bidirectional - Run unified peer in bidirectional mode"
-	@echo ""
-	@echo "Utility Commands:"
-	@echo "  make cert         - Generate certificates"
-	@echo "  make clean        - Clean up binaries"
-	@echo "  make deps         - Download dependencies"
-	@echo "  make all          - Run all components in tmux"
-	@echo "  make mp4-test     - Test MP4 video and audio pipelines"
-	@echo "  make network-monitor-test - Run network monitor test"
-	@echo ""
-	@echo "Configuration:"
-	@echo "  SERVER_ADDR       - Server address (default: $(SERVER_ADDR))"
-	@echo "  INTERMEDIATE_ADDR - Intermediate address (default: $(INTERMEDIATE_ADDR))"
-	@echo "  CERT_FILE         - Certificate file (default: $(CERT_FILE))"
-	@echo "  KEY_FILE          - Key file (default: $(KEY_FILE))"
-
-client: deps
-	cd client_peer && go run .
-
-server: deps cert
-	cd server_peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
+peer: deps cert
+	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
 
 intermediate: deps cert
 	cd intermediate && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
@@ -56,7 +25,6 @@ deps:
 
 clean:
 	@go clean
-	@rm -f client server intermediate_server
 
 all: deps cert
 	@tmux new-session -d -s p2p-quic \; \
@@ -65,19 +33,11 @@ all: deps cert
 		select-pane -t 0 \; \
 		send-keys 'make intermediate' Enter \; \
 		select-pane -t 1 \; \
-		send-keys 'sleep 2 && make server' Enter \; \
+		send-keys 'sleep 2 && make peer' Enter \; \
 		select-pane -t 2 \; \
-		send-keys 'sleep 4 && make client' Enter \; \
+		send-keys 'sleep 4 && make peer' Enter \; \
 		attach-session
 
 build: deps
-	@cd client_peer && go build -o ../client .
-	@cd server_peer && go build -o ../server .
+	@cd peer && go build -o ../peer .
 	@cd intermediate && go build -o ../intermediate_server .
-
-network-monitor-test: deps
-	@echo "Running network monitor test..."
-	@echo "Turn WiFi on/off to test network change detection"
-	@echo "Press Ctrl+C to stop"
-	cd client_peer && go run -tags=standalone network_monitor_standalone.go network_monitor.go
-	
