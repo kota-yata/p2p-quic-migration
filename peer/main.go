@@ -9,7 +9,6 @@ import (
     "net"
     "time"
 
-    "github.com/kota-yata/p2p-quic-migration/shared/intermediate"
     "github.com/quic-go/quic-go"
 )
 
@@ -71,7 +70,7 @@ func (s *Server) Run() error {
     }
     defer s.cleanup()
 
-    intermediateClient := intermediate.NewClient(s.config.serverAddr, s.tlsConfig, s.quicConfig, s.transport)
+    intermediateClient := NewClient(s.config.serverAddr, s.tlsConfig, s.quicConfig, s.transport)
 
     intermediateConn, err := intermediateClient.ConnectToServer()
     if err != nil {
@@ -169,4 +168,3 @@ func (s *Server) handleIncomingConnection(conn *quic.Conn, peerHandler *ServerPe
     log.Print("Acting as connection acceptor - waiting for peer streams first")
     handleBidirectionalCommunicationAsAcceptor(conn)
 }
-
