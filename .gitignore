@@ -6,8 +6,7 @@ bin/
 # **/*.mp4
 # **/*.mp3
 
-client_peer/client_peer
-server_peer/server_peer
+peer/peer
 intermediate/intermediate
 
 **/.venv
