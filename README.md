@@ -1,6 +1,52 @@
-# p2p-quic-migration  
-P2P QUIC with seamless connection migration.
+p2p-quic-migration is a project to seek the smallest interruption time when a peer's IP address has changed during p2p connection.
 
+## Existing Approaches
+### ICE Restart (WebRTC)
+This method involves restarting the Interactive Connectivity Establishment (ICE) process to re-negotiate the network path after a change in the local network address (e.g., switching from Wi-Fi to cellular data). ICE Restart essentially re-establishes the entire WebRTC connection. This includes gathering new candidates, performing STUN/TURN checks, and re-completing the handshake protocol.
+
+This process incurs a significant service interruption because the original media stream is halted until the new connection path is fully established. Experimental Evidence: Preliminary studies, using a WebRTC-based video conferencing service (e.g., Whereby), indicate a recovery time of approximately 8 seconds following an address change. This duration is substantial for real-time communication.
+
+### Utilizing Multipath Connection
+This method leverages multiple simultaneous network interfaces to maintain connectivity and enable seamless switching. A multipath connection maintains several active paths (e.g., using both Wi-Fi and cellular) concurrently. Upon failure or change in one path, the traffic can be instantly switched to another active path, eliminating the need for a full connection re-establishment.
+
+Theoretically, this is the optimal approach for minimizing interruption time, as the switch to the redundant interface is nearly instantaneous.
+
+However, Maintaining multiple active interfaces significantly increases battery consumption. This is due to preventing the secondary network interface from entering a low-power sleep state. Also, multipath capability is primarily limited to mobile devices, which are typically equipped with multiple radio interfaces (Wi-Fi, cellular). Most standard desktop and laptop computers are restricted to a single active radio interface unless a wired connection (LAN) is also utilized.
+
+Thus, this project proposes a universally applicable mechanism designed to minimize the service interruption time experienced during a Peer-to-Peer (P2P) connection following an IP address change.
+
+## Proposed Method
+The central premise of this project is the implementation of an immediate, temporary fallback to a server-relayed connection upon the detection of an IP address change, which minimizes service interruption while the Peer-to-Peer (P2P) link is re-established 
+
+<img src="./static/1.png" width="500"/>
+
+Two peers establish a direct P2P connection. Simultaneously, both peers maintain keep-alive sessions with an intermediate server. This server combines the functionality of a STUN, TURN and signaling server as utilized in standard ICE protocols.
+
+<img src="./static/2.png" width="500"/>
+
+Upon detecting a change in its IP address, Peer A immediately triggers the recovery protocol. Peer A first notifies the intermediate server of its new address. Crucially, Peer A then immediately switches its media transmission to flow through the intermediate server.
+
+<img src="./static/3.png" width="500"/>
+
+When the intermediate server receives the notification from Peer A, it forwards this status change to Peer B. Peer B, recognizing the failure of the direct P2P link, promptly begins sending its media stream to the intermediate server. At this stage, communication is considered recovered via the server-relayed path, ensuring minimal data loss and interruption.
+
+<img src="./static/4.png" width="500"/>
+With the connection successfully recovered via the server, both peers can now asynchronously attempt to re-establish a direct P2P link. This process can leverage the mechanisms of a standard ICE Restart, as the real-time media session is already guaranteed by the server relay and is no longer subject to critical interruption.
+
+<img src="./static/5.png" width="500"/>
+
+Once the new P2P connection path is successfully established and verified, both peers revert to transmitting media directly between themselves. The session returns to the original, optimized P2P state, and the intermediate server is no longer actively relaying media.
+
+### Utilizing QUIC for transport
+The proposed mechanism of an immediate server-relayed fallback cannot be directly implemented within the existing WebRTC framework due to the strict nature of the ICE protocol:
+- Candidate Nomination Requirement: The ICE session establishment mandates a rigorous, multi-step process: candidate gathering, connectivity checks, and subsequent candidate nomination. A fallback to a TURN server-relayed connection is only possible after a relay candidate has been successfully nominated and checked.
+- Protocol Violation: Implementing an immediate fallback would require bypassing or significantly modifying the candidate selection and nomination steps, thereby violating the core ICE protocol. While technically possible, this modification would compromise interoperability and adherence to established standards.
+
+Instead of modifying ICE, this project proposes building a custom session establishment mechanism, similar in concept to WebRTC's, but utilizing QUIC as the underlying transport protocol. Utilizing QUIC provides several significant advantages that simplify the protocol stack and inherently support the goal of minimizing interruption time:
+- Protocol Simplification and Consolidation: QUIC inherently provides functionality that is separately handled by multiple protocols in WebRTC. Specifically, QUIC can piggyback the security features of DTLS, most of the transport features of SCTP, and the control features of RTCP. This consolidation leads to a much simpler and more streamlined protocol stack.
+- Connection Migration: QUIC's built-in connection migration feature allows a client to switch network paths while maintaining the connection's integrity. Crucially, QUIC's migration capability enables a connection to be re-established with a server much quicker than a conventional DTLS/TCP connection re-establishment. This rapid recovery significantly contributes to the minimization of the overall service interruption time.
+
+# Development
 This project uses a [modified version of quic-go](https://github.com/kota-yata/quic-go). Place this repository and `quic-go` in the same directory hierarchy and it will work (if not, let me know).
 
 ## Prerequisites
@@ -31,7 +77,7 @@ export GI_TYPELIB_PATH="/opt/homebrew/lib/girepository-1.0:$GI_TYPELIB_PATH"
 gst-launch-1.0 --version
 ```
 
-## Development  
+## Running programs 
 ```bash
 # Run peer
 make peer
@@ -50,47 +96,3 @@ make build
 You must run the peers on different networks unless your router supports [NAT loopback](https://nordvpn.com/cybersecurity/glossary/nat-loopback/) (a.k.a. NAT hairpinning).
 
 If the connection succeeds, you should see the video and hear the audio from `static/output.mp4`. Then try switching the client's network (WiFi to cellular for example). The sound will be interrupted for like 3 sec and recovered soon.
-
-## How P2P QUIC Connection Migration Works
-
-### P2P Connection Establishment  
-<img src="./static/conn-establish.png" width="500"/>
-
-This step is quite similar to WebRTC’s approach, with some simplifications.
-
-#### Address Exchange  
-The client peer and server peer first connect to the intermediate server. The intermediate server retrieves each peer’s external address and exchanges them. Once both peers have each other's address, they can begin hole punching.
-
-In WebRTC, this is typically done using a STUN server and a signaling server. A peer asks the STUN server for its reflexive address, and then sends it to the signaling server, which relays it to the other peer. WebRTC peers often gather multiple address-port pairs (called "candidates"), including local addresses, to allow direct connections even within the same LAN. This project currently does **not** handle local candidate exchange.
-
-Previously, this project used [QUIC Address Discovery](https://www.ietf.org/archive/id/draft-seemann-quic-address-discovery-00.html) to perform a STUN-like function over QUIC. The draft defines an `OBSERVED_ADDRESS` frame, equivalent to STUN’s `MAPPED_ADDRESS` attribute, allowing a peer to learn its reflexive address as quick as possible via a probe packet.
-
-This approach would work better in real-world scenarios (e.g., when gathering addresses from multiple sources for security or NAT type detection), but this project now uses the intermediate server to directly exchange peer addresses for simplicity.
-
-#### NAT Hole Punching  
-Once peers have each other’s address, they begin NAT hole punching.
-
-NAT hole punching is a standard process in P2P connections. Both peers send UDP packets to create NAT table mappings. These initial packets might not reach the destination if the NAT mapping isn't yet established, but that’s expected. Eventually, both routers will have valid mappings and a direct connection will be possible.
-
-In this project, peers repeatedly attempt to initiate a QUIC connection from both sides until one succeeds. By contrast, WebRTC uses a more robust method with ICE (Interactive Connectivity Establishment), sending STUN Binding Requests for every combination of local and remote candidates. ICE then selects the final pair based on connectivity, RTT, user policy, and other criteria. If forced to use a relay (TURN) server, ICE will choose that path regardless of other available connections.
-
-### Handling Address Changes  
-Sometimes a peer's address changes and the connection breaks — e.g., when switching from Wi-Fi to 5G.
-
-In a client-server model over QUIC, this is handled seamlessly using the “connection migration” feature. QUIC identifies connections using Connection IDs rather than the typical 4-tuple, allowing servers to associate packets from a new IP/port with the same connection.
-
-However, this doesn't work as-is in P2P scenarios because a new NAT hole punch is required whenever a peer’s address changes. Packets from the new address get blocked by NAT before the mapping exists.
-
-This project handles that problem simply: when a client peer's address changes, it signals the server peer through the intermediate server.
-
-<img src="./static/network-change.png" width="500"/>
-
-The server peer then immediately switches packet transmission from the P2P connection to the intermediate server. During the new NAT hole punching process, application data is sent via the intermediate server.
-
-<img src="./static/conn-switch.png" width="500"/>
-
-Once the new NAT mappings are in place, the peers resume direct P2P communication.
-
-<img src="./static/new-p2p.png" width="500"/>
-
-This approach is quite general and could be applied to WebRTC or other systems. WebRTC handles address changes by triggering an ICE restart — essentially re-running the connection establishment step. From my testing, ICE restarts take about 5 seconds or more, and this project’s approach performs faster in comparison.
