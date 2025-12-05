@@ -49,14 +49,12 @@ func updateAudioPosition(position int64) {
 func (as *AudioStreamer) StreamAudio() error {
     var cmd *exec.Cmd
 
-    log.Printf("Starting audio from beginning (position tracking will resume from current transmission)")
+    log.Printf("Starting audio from beginning (mp3 source; position tracking resumes from current transmission)")
 
+    // Use output.mp3 as the audio source. decodebin ensures mp3 is decoded to raw PCM.
     cmd = exec.Command("gst-launch-1.0",
-        "filesrc", "location=../static/output.mp4", "!",
-        "qtdemux", "name=demux", "demux.audio_0", "!",
-        "queue", "!",
-        "aacparse", "!",
-        "faad", "!",
+        "filesrc", "location=../static/output.mp3", "!",
+        "decodebin", "!",
         "audioconvert", "!",
         "audioresample", "!",
         "audio/x-raw,rate=44100,channels=2,format=S16LE,layout=interleaved", "!",
@@ -264,156 +262,9 @@ func NewVideoReceiver(stream *quic.Stream) *VideoReceiver {
 func (vr *VideoReceiver) ReceiveVideo() error {
     log.Printf("Starting real-time video playback from stream")
 
-    cmd := exec.Command("gst-launch-1.0",
-        "fdsrc", "fd=0", "!",
-        "h264parse", "!",
-        "avdec_h264", "!",
-        "videoconvert", "!",
-        "videoscale", "!",
-        "autovideosink", "sync=true")
-
-    stdin, err := cmd.StdinPipe()
-    if err != nil {
-        return fmt.Errorf("failed to create stdin pipe: %v", err)
-    }
-
-    stderr, err := cmd.StderrPipe()
-    if err != nil {
-        return fmt.Errorf("failed to create stderr pipe: %v", err)
-    }
-
-    if err := cmd.Start(); err != nil {
-        return fmt.Errorf("failed to start gstreamer video playback: %v", err)
-    }
-
-    go func() {
-        buf := make([]byte, 1024)
-        for {
-            n, err := stderr.Read(buf)
-            if err != nil {
-                break
-            }
-            if n > 0 {
-                log.Printf("GStreamer video stderr: %s", string(buf[:n]))
-            }
-        }
-    }()
-
-    log.Printf("GStreamer video playback pipeline started")
-
-    buffer := make([]byte, 8192)
-    totalBytes := int64(0)
-
-    for {
-        n, err := vr.stream.Read(buffer)
-        if err != nil {
-            if err == io.EOF {
-                log.Printf("Video stream reception completed. Total bytes received: %d", totalBytes)
-                break
-            }
-            return fmt.Errorf("failed to read from video stream: %v", err)
-        }
-
-        if n > 0 {
-            written, err := stdin.Write(buffer[:n])
-            if err != nil {
-                return fmt.Errorf("failed to write to gstreamer video: %v", err)
-            }
-            totalBytes += int64(written)
-
-            if totalBytes%1048576 == 0 {
-                log.Printf("Received and playing %.1f MB of video data", float64(totalBytes)/1048576)
-            }
-        }
-    }
-
-    stdin.Close()
-
-    if err := cmd.Wait(); err != nil {
-        log.Printf("GStreamer video playback process ended with error: %v", err)
-    }
-
-    log.Printf("Video playback completed successfully. Total bytes received: %d", totalBytes)
-    return nil
+    return fmt.Errorf("video reception disabled")
 }
 
 func (vs *VideoStreamer) StreamVideo() error {
-    cmd := exec.Command("gst-launch-1.0",
-        "filesrc", "location=../static/output.mp4", "!",
-        "qtdemux", "name=demux", "demux.video_0", "!",
-        "queue", "!",
-        "h264parse", "!",
-        "video/x-h264,stream-format=byte-stream", "!",
-        "queue", "max-size-time=1000000000", "!",
-        "fdsink", "fd=1", "sync=true")
-
-    stdout, err := cmd.StdoutPipe()
-    if err != nil {
-        return fmt.Errorf("failed to create stdout pipe: %v", err)
-    }
-
-    stderr, err := cmd.StderrPipe()
-    if err != nil {
-        return fmt.Errorf("failed to create stderr pipe: %v", err)
-    }
-
-    if err := cmd.Start(); err != nil {
-        return fmt.Errorf("failed to start gstreamer video pipeline: %v", err)
-    }
-
-    go func() {
-        buf := make([]byte, 1024)
-        for {
-            n, err := stderr.Read(buf)
-            if err != nil {
-                break
-            }
-            if n > 0 {
-                log.Printf("GStreamer video stderr: %s", string(buf[:n]))
-            }
-        }
-    }()
-
-    log.Printf("GStreamer video pipeline started, streaming video data...")
-
-    buffer := make([]byte, 8192)
-    totalBytesSent := int64(0)
-    readCount := 0
-
-    for {
-        n, err := stdout.Read(buffer)
-        readCount++
-
-        if err != nil {
-            if err == io.EOF {
-                log.Printf("Video stream completed. Total bytes sent: %d, read attempts: %d", totalBytesSent, readCount)
-                break
-            }
-            return fmt.Errorf("failed to read from gstreamer video after %d reads: %v", readCount, err)
-        }
-
-        if n > 0 {
-            written, err := vs.stream.Write(buffer[:n])
-            if err != nil {
-                return fmt.Errorf("failed to write video data to stream after %d bytes: %v", totalBytesSent, err)
-            }
-            totalBytesSent += int64(written)
-
-            if totalBytesSent%1048576 == 0 {
-                log.Printf("Sent %.1f MB of video data", float64(totalBytesSent)/1048576)
-            }
-        }
-    }
-
-    if err := vs.stream.Close(); err != nil {
-        log.Printf("Error closing video stream: %v", err)
-    }
-
-    if err := cmd.Wait(); err != nil {
-        log.Printf("GStreamer video process ended with error: %v", err)
-    }
-
-    log.Printf("Video streaming completed successfully. Total bytes sent: %d", totalBytesSent)
-    return nil
+    return fmt.Errorf("video transmission disabled")
 }
-
