@@ -159,7 +159,7 @@ func (s *Server) runPeerListener(peerHandler *ServerPeerHandler) error {
 }
 
 func (s *Server) handleIncomingConnection(conn *quic.Conn, peerHandler *ServerPeerHandler) {
-    log.Print("New Peer Connection Accepted. Setting up bidirectional audio and video streaming...")
+    log.Print("New Peer Connection Accepted. Setting up bidirectional audio-only streaming...")
 
     peerHandler.StopAudioRelay()
 
