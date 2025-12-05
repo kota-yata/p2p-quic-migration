@@ -90,9 +90,9 @@ make build
 ```
 
 1. Run `make intermediate` somewhere  
-2. Run `make peer` on a machine behind NAT with your media files at ./static/output.mp4 and ./static/output.mp3
+2. Run `make peer` on a machine behind NAT with your media files at ./static/output.mp3
 3. Run `make peer` on another machine behind NAT  
 
 You must run the peers on different networks unless your router supports [NAT loopback](https://nordvpn.com/cybersecurity/glossary/nat-loopback/) (a.k.a. NAT hairpinning).
 
-If the connection succeeds, you should see the video and hear the audio from `static/output.mp4`. Then try switching the client's network (WiFi to cellular for example). The sound will be interrupted for like 3 sec and recovered soon.
+If the connection succeeds, you should hear the audio. Then try switching the client's network (WiFi to cellular for example). The sound will be interrupted for like 3 sec and recovered soon.
