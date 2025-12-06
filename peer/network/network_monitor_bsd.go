@@ -1,3 +1,6 @@
+//go:build darwin || freebsd || netbsd || openbsd
+// +build darwin freebsd netbsd openbsd
+
 package network_monitor
 
 import (
