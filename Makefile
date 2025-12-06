@@ -1,5 +1,3 @@
-# P2P QUIC Migration Makefile
-
 SERVER_ADDR ?= 0.0.0.0:1234
 INTERMEDIATE_ADDR ?= 203.178.143.72:12345
 CERT_FILE ?= server.crt

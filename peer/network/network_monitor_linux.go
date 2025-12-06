@@ -54,9 +54,31 @@ func (nm *NetworkMonitor) Stop() {
 }
 
 func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
-	addrs, err := net.InterfaceAddrs()
+	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to list routes: %w", err)
+	}
+
+	defaultIfaceIndex := -1
+	for _, route := range routes {
+		// If the route has no destination, it should be the default route
+		if route.Dst == nil || route.Dst.IP.IsUnspecified() || route.Dst.IP.Equal(net.IPv4zero) {
+			defaultIfaceIndex = route.LinkIndex
+			break
+		}
+	}
+	if defaultIfaceIndex == -1 {
+		return "", fmt.Errorf("no default route found")
+	}
+
+	iface, err := net.InterfaceByIndex(defaultIfaceIndex)
+	if err != nil {
+		return "", fmt.Errorf("failed to get interface by index: %w", err)
+	}
+
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return "", fmt.Errorf("failed to get addresses for interface: %w", err)
 	}
 
 	for _, addr := range addrs {
