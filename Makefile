@@ -10,6 +10,9 @@ KEY_FILE ?= server.key
 peer: deps cert
 	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
 
+address-detection:
+	cd peer/cmd && go run network_monitor_standalone.go
+
 intermediate: deps cert
 	cd intermediate && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
 
