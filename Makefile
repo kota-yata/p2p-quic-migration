@@ -11,6 +11,9 @@ peer: deps cert
 address-detection:
 	cd peer/cmd && go run network_monitor_standalone.go
 
+cm-test:
+	cd peer/cmd && go run connection_migration.go -cert ../../$(CERT_FILE) -key ../../$(KEY_FILE) -serverAddr "$(INTERMEDIATE_ADDR)"
+
 intermediate: deps cert
 	cd intermediate && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
 
