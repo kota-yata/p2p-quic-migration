@@ -57,6 +57,7 @@ func (nm *NetworkMonitor) Stop() {
 	}
 }
 
+// Return the first non-loopback IPv4 address found on the system
 func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
