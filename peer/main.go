@@ -1,15 +1,16 @@
 package main
 
 import (
-    "context"
-    "crypto/tls"
-    "flag"
-    "fmt"
-    "log"
-    "net"
-    "time"
+	"context"
+	"crypto/tls"
+	"flag"
+	"fmt"
+	"log"
+	"net"
+	"time"
 
-    "github.com/quic-go/quic-go"
+	network_monitor "github.com/kota-yata/p2p-quic-migration/peer/network"
+	"github.com/quic-go/quic-go"
 )
 
 const (
@@ -37,14 +38,14 @@ type ServerConfig struct {
 }
 
 type Server struct {
-    config           *ServerConfig
-    tlsConfig        *tls.Config
-    quicConfig       *quic.Config
-    transport        *quic.Transport
-    udpConn          *net.UDPConn
-    intermediateConn *quic.Conn
-    networkMonitor   *NetworkMonitor
-    peerHandler      *ServerPeerHandler
+	config           *ServerConfig
+	tlsConfig        *tls.Config
+	quicConfig       *quic.Config
+	transport        *quic.Transport
+	udpConn          *net.UDPConn
+	intermediateConn *quic.Conn
+	networkMonitor   *network_monitor.NetworkMonitor
+	peerHandler      *ServerPeerHandler
 }
 
 func parseFlags() *ServerConfig {
@@ -84,11 +85,11 @@ func (s *Server) Run() error {
     s.peerHandler = peerHandler
     go intermediateClient.ManagePeerDiscovery(intermediateConn, peerHandler)
 
-    s.networkMonitor = NewNetworkMonitor(s.handleNetworkChange)
-    if err := s.networkMonitor.Start(); err != nil {
-        return fmt.Errorf("failed to start network monitor: %v", err)
-    }
-    defer s.networkMonitor.Stop()
+	s.networkMonitor = network_monitor.NewNetworkMonitor(s.handleNetworkChange)
+	if err := s.networkMonitor.Start(); err != nil {
+		return fmt.Errorf("failed to start network monitor: %v", err)
+	}
+	defer s.networkMonitor.Stop()
 
     return s.runPeerListener(peerHandler)
 }
