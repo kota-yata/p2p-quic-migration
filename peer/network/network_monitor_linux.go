@@ -27,7 +27,7 @@ func NewNetworkMonitor(onChange func(oldAddr, newAddr string)) *NetworkMonitor {
 }
 
 func (nm *NetworkMonitor) Start() error {
-	// Get initial address
+	log.Printf("Netlink monitor initiated")
 	initialAddr, err := nm.getCurrentAddress()
 	if err != nil {
 		return fmt.Errorf("failed to get initial address: %w", err)
