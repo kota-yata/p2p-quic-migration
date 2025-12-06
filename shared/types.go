@@ -2,6 +2,8 @@ package shared
 
 import "time"
 
+// Types used from both peer and intermediary server
+
 type PeerInfo struct {
 	ID          string    `json:"id"`
 	Address     string    `json:"address"`
