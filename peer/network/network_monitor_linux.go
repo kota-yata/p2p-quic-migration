@@ -62,7 +62,7 @@ func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
 	defaultIfaceIndex := -1
 	for _, route := range routes {
 		// If the route has no destination, it should be the default route
-		if route.Dst == nil || route.Dst.IP.IsUnspecified() || route.Dst.IP.Equal(net.IPv4zero) {
+		if route.Dst == nil || route.Dst.IP.IsUnspecified() || route.Dst.String() == "0.0.0.0/0" {
 			defaultIfaceIndex = route.LinkIndex
 			break
 		}
