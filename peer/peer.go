@@ -30,6 +30,8 @@ type Peer struct {
 	networkMonitor   *network_monitor.NetworkMonitor
 	knownPeers       map[string]shared.PeerInfo
 	audioRelayStop   func()
+	// hole punch cancellation management
+	hpCancels []context.CancelFunc
 }
 
 func (s *Peer) Run() error {
@@ -54,6 +56,9 @@ func (s *Peer) Run() error {
 	// init peer discovery and handling
 	s.knownPeers = make(map[string]shared.PeerInfo)
 	go ManagePeerDiscovery(intermediateConn, s)
+
+	// monitor established connections and coordinate cancellation/handling
+	go s.monitorConnections()
 
 	s.networkMonitor = network_monitor.NewNetworkMonitor(s.onAddrChange)
 	if err := s.networkMonitor.Start(); err != nil {
@@ -123,9 +128,14 @@ func (s *Peer) runPeerListener() error {
 			log.Printf("Accept error: %v", err)
 			continue
 		}
-		connectionEstablished <- true
-
-		go s.handleIncomingConnection(conn)
+		// notify accept event; monitor will cancel dialers and handle
+		select {
+		case connectionEstablished <- connchan{conn: conn, isAcceptor: true}:
+		default:
+			// if buffer is full, close the new conn to avoid leaks
+			log.Printf("connectionEstablished channel full; dropping accept notification")
+			conn.CloseWithError(0, "dropped: channel full")
+		}
 	}
 }
 
@@ -157,7 +167,11 @@ func (p *Peer) handleNewPeer(peer shared.PeerInfo) {
 }
 
 func (p *Peer) startHolePunching(peerAddr string) {
-	go attemptNATHolePunch(p.transport, peerAddr, p.tlsConfig, p.quicConfig, connectionEstablished, p.config.role)
+	// create a cancelable context for this punching attempt
+	ctx, cancel := context.WithCancel(context.Background())
+	// record cancel so an acceptor success can stop dial attempts
+	p.hpCancels = append(p.hpCancels, cancel)
+	go attemptNATHolePunch(ctx, p.transport, peerAddr, p.tlsConfig, p.quicConfig, connectionEstablished)
 }
 
 func (p *Peer) StopAudioRelay() {
@@ -200,7 +214,9 @@ func (p *Peer) StartHolePunchingToAllPeers(transport *quic.Transport, tlsConfig 
 
 	for peerID, peer := range p.knownPeers {
 		log.Printf("Server starting hole punch to peer %s at %s", peerID, peer.Address)
-		go attemptNATHolePunch(transport, peer.Address, tlsConfig, quicConfig, connectionEstablished, p.config.role)
+		ctx, cancel := context.WithCancel(context.Background())
+		p.hpCancels = append(p.hpCancels, cancel)
+		go attemptNATHolePunch(ctx, transport, peer.Address, tlsConfig, quicConfig, connectionEstablished)
 	}
 }
 
@@ -246,6 +262,26 @@ func (s *Peer) onAddrChange(oldAddr, newAddr string) {
 
 	if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
 		log.Printf("Failed to send server network change notification after migration: %v", err)
+	}
+}
+
+// monitorConnections waits for either acceptor or initiator connection events,
+// cancels outstanding hole punching attempts, and hands off to the proper handler.
+func (s *Peer) monitorConnections() {
+	for evt := range connectionEstablished {
+		// cancel any in-flight hole punching attempts
+		for _, c := range s.hpCancels {
+			c()
+		}
+		s.hpCancels = nil
+
+		if evt.isAcceptor {
+			s.handleIncomingConnection(evt.conn)
+		} else {
+			// Use remote addr for logging context
+			peerAddr := evt.conn.RemoteAddr().String()
+			handleCommunicationAsInitiator(evt.conn, peerAddr, s.config.role)
+		}
 	}
 }
 
