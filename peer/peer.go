@@ -14,16 +14,17 @@ import (
 )
 
 type ServerConfig struct {
-	keyFile    string
-	certFile   string
-	serverAddr string
+    keyFile    string
+    certFile   string
+    serverAddr string
+    role       string
 }
 
 type Peer struct {
-	config           *ServerConfig
-	tlsConfig        *tls.Config
-	quicConfig       *quic.Config
-	transport        *quic.Transport
+    config           *ServerConfig
+    tlsConfig        *tls.Config
+    quicConfig       *quic.Config
+    transport        *quic.Transport
 	udpConn          *net.UDPConn
 	intermediateConn *quic.Conn
 	networkMonitor   *network_monitor.NetworkMonitor
@@ -129,15 +130,15 @@ func (s *Peer) runPeerListener() error {
 }
 
 func (s *Peer) handleIncomingConnection(conn *quic.Conn) {
-	log.Print("New Peer Connection Accepted. Setting up bidirectional audio-only streaming...")
+    log.Print("New Peer Connection Accepted. Setting up audio streaming...")
 
 	// stop any relay now that direct P2P is up
 	s.StopAudioRelay()
 
-	// Since we received the connection, we act as the "acceptor"
-	// We accept incoming streams from the initiator and then open our own
-	log.Print("Acting as connection acceptor - waiting for peer streams first")
-	handleBidirectionalCommunicationAsAcceptor(conn)
+    // Since we received the connection, we act as the "acceptor"
+    // Behavior depends on role (sender/receiver/both)
+    log.Printf("Acting as connection acceptor with role=%s", s.config.role)
+    handleCommunicationAsAcceptor(conn, s.config.role)
 }
 
 func (p *Peer) handleInitialPeers(peers []shared.PeerInfo) {
@@ -157,7 +158,7 @@ func (p *Peer) handleNewPeer(peer shared.PeerInfo) {
 }
 
 func (p *Peer) startHolePunching(peerAddr string) {
-	go attemptNATHolePunch(p.transport, peerAddr, p.tlsConfig, p.quicConfig, connectionEstablished)
+    go attemptNATHolePunch(p.transport, peerAddr, p.tlsConfig, p.quicConfig, connectionEstablished, p.config.role)
 }
 
 func (p *Peer) StopAudioRelay() {
@@ -169,12 +170,17 @@ func (p *Peer) StopAudioRelay() {
 }
 
 func (p *Peer) HandleNetworkChange(peerID, oldAddr, newAddr string) {
-	log.Printf("Network change notification from server: peer %s changed from %s to %s", peerID, oldAddr, newAddr)
+    log.Printf("Network change notification from server: peer %s changed from %s to %s", peerID, oldAddr, newAddr)
 
-	if err := p.switchToAudioRelay(peerID); err != nil {
-		log.Printf("Failed to switch to audio relay: %v", err)
-		return
-	}
+    // Only sender/both should stream via relay while reconnecting
+    if p.config != nil && (p.config.role == "sender" || p.config.role == "both") {
+        if err := p.switchToAudioRelay(peerID); err != nil {
+            log.Printf("Failed to switch to audio relay: %v", err)
+            return
+        }
+    } else {
+        log.Printf("Role=%s; skipping audio relay during migration", p.config.role)
+    }
 
 	log.Printf("Starting new hole punching to updated address: %s", newAddr)
 	p.startHolePunching(newAddr)
@@ -193,10 +199,10 @@ func (p *Peer) StartHolePunchingToAllPeers(transport *quic.Transport, tlsConfig 
 	p.tlsConfig = tlsConfig
 	p.quicConfig = quicConfig
 
-	for peerID, peer := range p.knownPeers {
-		log.Printf("Server starting hole punch to peer %s at %s", peerID, peer.Address)
-		go attemptNATHolePunch(transport, peer.Address, tlsConfig, quicConfig, connectionEstablished)
-	}
+    for peerID, peer := range p.knownPeers {
+        log.Printf("Server starting hole punch to peer %s at %s", peerID, peer.Address)
+        go attemptNATHolePunch(transport, peer.Address, tlsConfig, quicConfig, connectionEstablished, p.config.role)
+    }
 }
 
 func (p *Peer) switchToAudioRelay(targetPeerID string) error {

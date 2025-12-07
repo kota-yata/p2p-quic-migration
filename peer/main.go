@@ -24,14 +24,25 @@ func main() {
 }
 
 func parseFlags() *ServerConfig {
-	key := flag.String("key", "server.key", "TLS key (requires -cert option)")
-	cert := flag.String("cert", "server.crt", "TLS certificate (requires -key option)")
-	serverAddr := flag.String("serverAddr", "203.178.143.72:12345", "Address to intermediary server")
-	flag.Parse()
+    key := flag.String("key", "server.key", "TLS key (requires -cert option)")
+    cert := flag.String("cert", "server.crt", "TLS certificate (requires -key option)")
+    serverAddr := flag.String("serverAddr", "203.178.143.72:12345", "Address to intermediary server")
+    role := flag.String("role", "both", "Peer role: sender, receiver, or both")
+    flag.Parse()
 
-	return &ServerConfig{
-		keyFile:    *key,
-		certFile:   *cert,
-		serverAddr: *serverAddr,
-	}
+    cfg := &ServerConfig{
+        keyFile:    *key,
+        certFile:   *cert,
+        serverAddr: *serverAddr,
+        role:       *role,
+    }
+
+    switch cfg.role {
+    case "sender", "receiver", "both":
+        // ok
+    default:
+        log.Fatalf("invalid -role value: %s (allowed: sender, receiver, both)", cfg.role)
+    }
+
+    return cfg
 }

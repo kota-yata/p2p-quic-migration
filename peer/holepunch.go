@@ -16,7 +16,7 @@ const (
     holePunchTimeout     = 2 * time.Second
 )
 
-func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan bool) {
+func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan bool, role string) {
     log.Printf("Starting NAT hole punching to peer: %s (will attempt %d times)", peerAddr, maxHolePunchAttempts)
 
     peerAddrResolved, err := net.ResolveUDPAddr("udp", peerAddr)
@@ -33,7 +33,7 @@ func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Con
         default:
         }
 
-        if err := performHolePunchAttempt(tr, peerAddrResolved, tlsConfig, quicConfig, peerAddr, attempt); err != nil {
+        if err := performHolePunchAttempt(tr, peerAddrResolved, tlsConfig, quicConfig, peerAddr, attempt, role); err != nil {
             log.Printf("NAT hole punch attempt %d/%d to %s failed: %v", attempt, maxHolePunchAttempts, peerAddr, err)
         }
 
@@ -48,7 +48,7 @@ func attemptNATHolePunch(tr *quic.Transport, peerAddr string, tlsConfig *tls.Con
     log.Printf("Completed all %d NAT hole punch attempts to peer %s", maxHolePunchAttempts, peerAddr)
 }
 
-func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, tlsConfig *tls.Config, quicConfig *quic.Config, peerAddr string, attempt int) error {
+func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, tlsConfig *tls.Config, quicConfig *quic.Config, peerAddr string, attempt int, role string) error {
     log.Printf("NAT hole punch attempt %d/%d to peer %s", attempt, maxHolePunchAttempts, peerAddr)
 
     udpConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
@@ -69,8 +69,8 @@ func performHolePunchAttempt(tr *quic.Transport, peerAddrResolved *net.UDPAddr, 
 
     log.Printf("NAT hole punch attempt %d/%d to %s succeeded - acting as connection initiator", attempt, maxHolePunchAttempts, peerAddr)
 
-    // We open streams first and then accept return streams
-    go handleBidirectionalCommunicationAsInitiator(conn, peerAddr)
+    // Initiator behavior depends on role
+    go handleCommunicationAsInitiator(conn, peerAddr, role)
 
     return nil
 }
@@ -89,4 +89,3 @@ func waitBeforeNextHolePunch(attempt int, stopChan chan bool) bool {
         return false // Continue with next attempt
     }
 }
-

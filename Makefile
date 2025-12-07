@@ -2,11 +2,18 @@ SERVER_ADDR ?= 0.0.0.0:1234
 INTERMEDIATE_ADDR ?= 203.178.143.72:12345
 CERT_FILE ?= server.crt
 KEY_FILE ?= server.key
+ROLE ?= both
 
-.PHONY: peer intermediate unified-peer unified-server unified-client unified-bidirectional clean all deps cert
+.PHONY: peer ps pr intermediate unified-peer unified-server unified-client unified-bidirectional clean deps cert
 
 peer: deps cert
-	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
+	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -serverAddr "$(INTERMEDIATE_ADDR)" -role "$(ROLE)"
+
+ps: deps cert
+	$(MAKE) peer ROLE=sender
+
+pr: deps cert
+	$(MAKE) peer ROLE=receiver
 
 address-detection:
 	cd peer/cmd && go run network_monitor_standalone.go
@@ -29,18 +36,6 @@ deps:
 
 clean:
 	@go clean
-
-all: deps cert
-	@tmux new-session -d -s p2p-quic \; \
-		split-window -h \; \
-		split-window -v \; \
-		select-pane -t 0 \; \
-		send-keys 'make intermediate' Enter \; \
-		select-pane -t 1 \; \
-		send-keys 'sleep 2 && make peer' Enter \; \
-		select-pane -t 2 \; \
-		send-keys 'sleep 4 && make peer' Enter \; \
-		attach-session
 
 build: deps
 	@cd peer && go build -o ../peer .
