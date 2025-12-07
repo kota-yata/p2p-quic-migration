@@ -9,97 +9,109 @@ import (
     "github.com/quic-go/quic-go"
 )
 
-// Initiator: Opens streams first, then accepts return streams
-func handleBidirectionalCommunicationAsInitiator(conn *quic.Conn, peerAddr string) {
+// Initiator: behavior depends on role
+func handleCommunicationAsInitiator(conn *quic.Conn, peerAddr string, role string) {
     defer conn.CloseWithError(0, "Initiator session completed")
-    log.Printf("Starting bidirectional communication as initiator with %s", peerAddr)
-
-    // First: Open our outgoing audio stream
-    audioSendStream, err := conn.OpenStreamSync(context.Background())
-    if err != nil {
-        log.Printf("Failed to open outgoing audio stream as initiator: %v", err)
-        return
-    }
-    defer audioSendStream.Close()
-
-    log.Printf("Initiator opened outgoing audio stream, starting to send audio")
+    log.Printf("Initiator started with role=%s, peer=%s", role, peerAddr)
 
     var wg sync.WaitGroup
 
-    // Start sending our audio
-    wg.Add(1)
-    go func() {
-        defer wg.Done()
-        audioStreamer := NewAudioStreamer(audioSendStream)
-        if err := audioStreamer.StreamAudio(); err != nil {
-            log.Printf("Initiator audio streaming failed: %v", err)
+    // If sender or both: open outgoing stream and send audio
+    if role == "sender" || role == "both" {
+        audioSendStream, err := conn.OpenStreamSync(context.Background())
+        if err != nil {
+            log.Printf("Failed to open outgoing audio stream as initiator: %v", err)
+        } else {
+            log.Printf("Initiator opened outgoing audio stream, starting to send audio")
+            wg.Add(1)
+            go func() {
+                defer wg.Done()
+                defer audioSendStream.Close()
+                audioStreamer := NewAudioStreamer(audioSendStream)
+                if err := audioStreamer.StreamAudio(); err != nil {
+                    log.Printf("Initiator audio streaming failed: %v", err)
+                }
+            }()
         }
-    }()
+    }
 
-    // Then: Accept return streams from the acceptor
-    go func() {
-        log.Printf("Initiator waiting for return audio stream from acceptor...")
-        acceptStreamsFromPeer(conn, "initiator")
-    }()
+    // If receiver or both: accept incoming streams
+    if role == "receiver" || role == "both" {
+        go func() {
+            log.Printf("Initiator waiting to receive incoming audio stream from peer...")
+            acceptStreamsFromPeer(conn, "initiator", role)
+        }()
+    }
 
     wg.Wait()
-    log.Printf("Initiator bidirectional communication completed")
+    log.Printf("Initiator communication completed for role=%s", role)
 }
 
-// Acceptor: Accepts streams first, then opens return streams
-func handleBidirectionalCommunicationAsAcceptor(conn *quic.Conn) {
-    log.Printf("Starting bidirectional communication as acceptor")
+// Acceptor: behavior depends on role
+func handleCommunicationAsAcceptor(conn *quic.Conn, role string) {
+    log.Printf("Acceptor started with role=%s", role)
 
-    // First: Accept incoming streams from initiator
-    go func() {
-        log.Printf("Acceptor waiting for incoming audio stream from initiator...")
-        acceptStreamsFromPeer(conn, "acceptor")
-    }()
-
-    // Give the acceptor goroutine a moment to start, then open our return streams
-    time.Sleep(100 * time.Millisecond)
-
-    audioSendStream, err := conn.OpenStreamSync(context.Background())
-    if err != nil {
-        log.Printf("Failed to open return audio stream as acceptor: %v", err)
-        return
+    // If receiver or both: accept incoming streams first
+    if role == "receiver" || role == "both" {
+        go func() {
+            log.Printf("Acceptor waiting for incoming audio stream from initiator...")
+            acceptStreamsFromPeer(conn, "acceptor", role)
+        }()
     }
-    defer audioSendStream.Close()
 
-    log.Printf("Acceptor opened return audio stream, starting to send audio back")
-
-    var wg sync.WaitGroup
-    wg.Add(1)
-
-    go func() {
-        defer wg.Done()
-        audioStreamer := NewAudioStreamer(audioSendStream)
-        if err := audioStreamer.StreamAudio(); err != nil {
-            log.Printf("Acceptor audio streaming failed: %v", err)
+    // If sender or both: open outgoing stream to send
+    if role == "sender" || role == "both" {
+        // Give the accept goroutine a moment if also receiving
+        if role == "both" {
+            time.Sleep(100 * time.Millisecond)
         }
-    }()
 
-    wg.Wait()
-    log.Printf("Acceptor bidirectional communication completed")
+        audioSendStream, err := conn.OpenStreamSync(context.Background())
+        if err != nil {
+            log.Printf("Failed to open outgoing audio stream as acceptor: %v", err)
+            return
+        }
+        defer audioSendStream.Close()
+
+        var wg sync.WaitGroup
+        wg.Add(1)
+
+        go func() {
+            defer wg.Done()
+            audioStreamer := NewAudioStreamer(audioSendStream)
+            if err := audioStreamer.StreamAudio(); err != nil {
+                log.Printf("Acceptor audio streaming failed: %v", err)
+            }
+        }()
+
+        wg.Wait()
+        log.Printf("Acceptor sending completed for role=%s", role)
+    }
 }
 
 // Common function to accept and handle incoming streams
-func acceptStreamsFromPeer(conn *quic.Conn, role string) {
+func acceptStreamsFromPeer(conn *quic.Conn, who string, role string) {
     streamCount := 0
     for {
         stream, err := conn.AcceptStream(context.Background())
         if err != nil {
-            log.Printf("%s error accepting incoming stream: %v", role, err)
+            log.Printf("%s error accepting incoming stream: %v", who, err)
             break
         }
 
         streamCount++
-        log.Printf("%s accepted incoming stream #%d", role, streamCount)
+        log.Printf("%s accepted incoming stream #%d", who, streamCount)
 
         if streamCount == 1 {
-            go handleIncomingAudioStream(stream, role)
+            // Only receive if role permits
+            if role == "receiver" || role == "both" {
+                go handleIncomingAudioStream(stream, who)
+            } else {
+                log.Printf("%s is sender-only; closing unexpected inbound stream #%d", who, streamCount)
+                stream.Close()
+            }
         } else {
-            log.Printf("%s unexpected additional stream #%d (video disabled), closing", role, streamCount)
+            log.Printf("%s unexpected additional stream #%d (video disabled), closing", who, streamCount)
             stream.Close()
         }
     }
