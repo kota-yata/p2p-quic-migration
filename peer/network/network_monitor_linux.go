@@ -1,5 +1,4 @@
 //go:build linux || android
-// +build linux android
 
 package network_monitor
 
@@ -7,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/vishvananda/netlink"
@@ -54,48 +54,53 @@ func (nm *NetworkMonitor) Stop() {
 	}
 }
 
+// getCurrentAddress retrieves the current preferred IPv4 address
+// The most desirable functionality here is to return the default route interface's IP.
+// However, Android devices sometimes lack a default route, so we fall back to selecting
+// an available non-loopback IPv4 address, prioritizing Wi-Fi and Ethernet interfaces.
 func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
-	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+	ifaces, err := net.Interfaces()
 	if err != nil {
-		return "", fmt.Errorf("failed to list routes: %w", err)
+		return "", fmt.Errorf("failed to get network interfaces: %w", err)
 	}
 
-	defaultIfaceIndex := -1
-	for _, route := range routes {
-		// If the route has no destination, it should be the default route
-		if route.Dst == nil || route.Dst.IP.IsUnspecified() || route.Dst.String() == "0.0.0.0/0" {
-			defaultIfaceIndex = route.LinkIndex
-			break
+	var availableAddrs []net.IP
+
+	for _, iface := range ifaces {
+		if (iface.Flags&net.FlagUp) == 0 || (iface.Flags&net.FlagLoopback) != 0 {
+			continue // interface down or loopback
 		}
-	}
-	if defaultIfaceIndex == -1 {
-		return "", fmt.Errorf("no default route found")
-	}
 
-	iface, err := net.InterfaceByIndex(defaultIfaceIndex)
-	if err != nil {
-		return "", fmt.Errorf("failed to get interface by index: %w", err)
-	}
-
-	addrs, err := iface.Addrs()
-	if err != nil {
-		return "", fmt.Errorf("failed to get addresses for interface: %w", err)
-	}
-
-	for _, addr := range addrs {
-		var ip net.IP
-		switch v := addr.(type) {
-		case *net.IPNet:
-			ip = v.IP
-		case *net.IPAddr:
-			ip = v.IP
-		default:
+		addrs, err := iface.Addrs()
+		if err != nil {
 			continue
 		}
 
-		if ip != nil && !ip.IsLoopback() && ip.To4() != nil {
-			return ip.String(), nil
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			default:
+				continue
+			}
+
+			if ip != nil && ip.To4() != nil {
+				if isWiFiInterface(iface.Name) || isEthernetInterface(iface.Name) {
+					// Prioritize Wi-Fi and Ethernet interfaces
+					availableAddrs = append([]net.IP{ip}, availableAddrs...)
+				}
+				availableAddrs = append(availableAddrs, ip)
+			}
 		}
+	}
+
+	if len(availableAddrs) >= 2 {
+		return availableAddrs[0].String(), nil
+	} else if len(availableAddrs) == 1 {
+		return availableAddrs[0].String(), nil
 	}
 
 	return "", fmt.Errorf("no suitable network interface found")
@@ -123,4 +128,12 @@ func (nm *NetworkMonitor) monitorLoop() {
 			return
 		}
 	}
+}
+
+// Heuristic approach by checking interface name prefix
+func isWiFiInterface(ifaceName string) bool {
+	return strings.HasPrefix(ifaceName, "wlan") || strings.HasPrefix(ifaceName, "en")
+}
+func isEthernetInterface(ifaceName string) bool {
+	return strings.HasPrefix(ifaceName, "eth")
 }
