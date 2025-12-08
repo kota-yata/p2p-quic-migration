@@ -90,15 +90,15 @@ func (p *Peer) setupTLS() error {
 }
 
 func (p *Peer) setupTransport() error {
-    var err error
-    // Bind to all interfaces on a fixed port so the socket remains valid
-    // across interface/IP changes. The kernel selects the correct source IP
-    // per route, avoiding send failures when the primary interface changes.
-    log.Printf("Binding UDP transport to local address: 0.0.0.0")
-    p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: net.IPv4zero})
-    if err != nil {
-        return fmt.Errorf("failed to listen on UDP: %v", err)
-    }
+	var err error
+	// Bind to all interfaces on a fixed port so the socket remains valid
+	// across interface/IP changes. The kernel selects the correct source IP
+	// per route, avoiding send failures when the primary interface changes.
+	log.Printf("Binding UDP transport to local address: 0.0.0.0")
+	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: net.IPv4zero})
+	if err != nil {
+		return fmt.Errorf("failed to listen on UDP: %v", err)
+	}
 
 	p.transport = &quic.Transport{
 		Conn: p.udpConn,
@@ -242,23 +242,25 @@ func (p *Peer) switchToAudioRelay(targetPeerID string) error {
 }
 
 func (s *Peer) onAddrChange(oldAddr, newAddr net.IP) {
-    log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
+	log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
 
-    if s.intermediateConn == nil {
-        log.Println("No intermediate connection available for network change")
-        return
-    }
-    // With address-agnostic binding (0.0.0.0), the existing UDP socket stays
-    // valid and the OS will route future packets via the new interface. QUIC
-    // will observe the new 4-tuple without manual AddPath, so we only notify
-    // the server and restart peer hole punching.
-    log.Printf("Probing/skipping manual path migration; relying on Any-address binding")
+	if s.intermediateConn == nil {
+		log.Println("No intermediate connection available for network change")
+		return
+	}
+	// Migrate the server connection to a fresh UDP socket bound to the new
+	// local address to avoid per-packet control data pointing at a stale IP.
+	if err := s.migrateIntermediateConnection(newAddr); err != nil {
+		log.Printf("Failed to migrate server connection: %v", err)
+		return
+	}
+	log.Printf("Successfully migrated server connection to new address: %s", newAddr)
 
-    if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
-        log.Printf("Failed to send server network change notification after migration: %v", err)
-    }
+	if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
+		log.Printf("Failed to send server network change notification after migration: %v", err)
+	}
 
-    s.StartHolePunchingToAllPeers()
+	s.StartHolePunchingToAllPeers()
 }
 
 // monitorConnections waits for either acceptor or initiator connection events,
@@ -286,7 +288,9 @@ func (s *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		return fmt.Errorf("connection is already closed, cannot migrate")
 	}
 
-	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: newAddr, Port: serverPort})
+	// Bind a fresh UDP socket to the new local IP with an ephemeral port.
+	// Using a different socket avoids stale ancillary data on the old path.
+	newUDPConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: newAddr, Port: 0})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection: %v", err)
 	}
@@ -301,7 +305,7 @@ func (s *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		return fmt.Errorf("failed to add new path: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	log.Printf("Probing new path from %s to intermediate server", newAddr)
@@ -321,9 +325,8 @@ func (s *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		return fmt.Errorf("failed to switch to new path: %v", err)
 	}
 
-	// Update the server's transport and UDP connection used for outgoing connections
-	s.transport = newTransport
-	s.udpConn = newUDPConn
+	// Keep the listener's transport/socket as-is; the new transport is now
+	// owned by the intermediate connection's path.
 
 	return nil
 }
