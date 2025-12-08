@@ -290,7 +290,7 @@ func (s *Peer) migrateIntermediateConnection(newAddr string) error {
 		return fmt.Errorf("connection is already closed, cannot migrate")
 	}
 
-	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection: %v", err)
 	}
@@ -343,7 +343,7 @@ func (s *Peer) sendNetworkChangeNotification(oldAddr string) error {
 	// The server looks at the source address of the incoming connection, not newAddr in the payload
 	newFullAddr := s.intermediateConn.LocalAddr().String()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	stream, err := s.intermediateConn.OpenStreamSync(ctx)
