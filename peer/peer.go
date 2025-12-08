@@ -114,9 +114,7 @@ func (s *Peer) setupTransport() error {
     }
 
     s.udpConn = udp
-    // Wrap with tolerant PacketConn to avoid fatal errors when old path dies
-    pc := &tolerantPacketConn{PacketConn: udp, swallowENetUnreach: true}
-    s.transport = &quic.Transport{Conn: pc}
+    s.transport = &quic.Transport{Conn: udp}
     log.Printf("UDP transport bound to %s", udp.LocalAddr())
     return nil
 }
@@ -406,32 +404,37 @@ func (s *Peer) migrateIntermediateConnection(newAddr string) error {
 		return fmt.Errorf("failed to add new path: %v", err)
 	}
 
-    // Try probing with a couple of short retries to let routes stabilize
-    var probeErr error
-    for i := 1; i <= 3; i++ {
-        ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-        log.Printf("Probing new path from %s (bind %s) to intermediate server [attempt %d]", newAddr, newUDPConn.LocalAddr().String(), i)
-        probeErr = path.Probe(ctx)
-        cancel()
-        if probeErr == nil {
-            log.Printf("Path probing succeeded on attempt %d", i)
-            break
+    // Prefer immediate switch when old path is gone; then validate
+    if err := path.Switch(); err != nil {
+        log.Printf("Immediate switch to new path failed: %v; attempting probe/then switch", err)
+        // Try probing with a couple of short retries to let routes stabilize
+        var probeErr error
+        for i := 1; i <= 3; i++ {
+            ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+            log.Printf("Probing new path from %s (bind %s) to intermediate server [attempt %d]", newAddr, newUDPConn.LocalAddr().String(), i)
+            probeErr = path.Probe(ctx)
+            cancel()
+            if probeErr == nil {
+                log.Printf("Path probing succeeded on attempt %d", i)
+                break
+            }
+            time.Sleep(400 * time.Millisecond)
         }
-        time.Sleep(400 * time.Millisecond)
+        if probeErr != nil {
+            newUDPConn.Close()
+            return fmt.Errorf("failed to probe new path: %v", probeErr)
+        }
+        log.Printf("Switching to new path after successful probe")
+        if err := path.Switch(); err != nil {
+            if closeErr := path.Close(); closeErr != nil {
+                log.Printf("Warning: failed to close path after switch failure: %v", closeErr)
+            }
+            newUDPConn.Close()
+            return fmt.Errorf("failed to switch to new path: %v", err)
+        }
+    } else {
+        log.Printf("Switched to new path without prior probe (old path likely down)")
     }
-    if probeErr != nil {
-        newUDPConn.Close()
-        return fmt.Errorf("failed to probe new path: %v", probeErr)
-    }
-
-	log.Printf("Switching to new path")
-	if err := path.Switch(); err != nil {
-		if closeErr := path.Close(); closeErr != nil {
-			log.Printf("Warning: failed to close path after switch failure: %v", closeErr)
-		}
-		newUDPConn.Close()
-		return fmt.Errorf("failed to switch to new path: %v", err)
-	}
 
     // Update the server's transport and UDP connection used for outgoing connections
     s.transport = newTransport
