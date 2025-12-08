@@ -107,13 +107,45 @@ func (a *app) setupTLS() error {
 }
 
 func (a *app) setupTransport() error {
-	udp, err := net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: net.IPv4zero})
-	if err != nil {
-		return fmt.Errorf("failed to listen on UDP: %v", err)
-	}
-	a.udpConn = udp
-	a.transport = &quic.Transport{Conn: udp}
-	return nil
+    ip := determineLocalIPv4ForRemote(a.cfg.serverAddr)
+    laddr := &net.UDPAddr{IP: ip, Port: serverPort}
+    udp, err := net.ListenUDP("udp4", laddr)
+    if err != nil {
+        return fmt.Errorf("failed to listen on UDP %s: %v", laddr.String(), err)
+    }
+    // Try to bind to interface that owns the IP (Linux/Android)
+    ifName, _ := ifaceNameForIP(ip)
+    if ifName != "" {
+        if err := bindToDevice(udp, ifName); err != nil {
+            log.Printf("Warning: failed to bind UDP socket to interface %s: %v", ifName, err)
+        } else {
+            log.Printf("UDP socket bound to interface %s", ifName)
+        }
+    }
+    a.udpConn = udp
+    a.transport = &quic.Transport{Conn: udp}
+    log.Printf("UDP transport bound to %s", udp.LocalAddr())
+    return nil
+}
+
+// determineLocalIPv4ForRemote returns the local IPv4 the OS would use to
+// reach the given remote UDP address. Falls back to 0.0.0.0 on failure.
+func determineLocalIPv4ForRemote(remote string) net.IP {
+    raddr, err := net.ResolveUDPAddr("udp4", remote)
+    if err != nil || raddr == nil {
+        log.Printf("Warning: failed to resolve remote '%s': %v; using 0.0.0.0", remote, err)
+        return net.IPv4zero
+    }
+    c, err := net.DialUDP("udp4", nil, raddr)
+    if err != nil {
+        log.Printf("Warning: failed to dial remote '%s' to determine local IP: %v; using 0.0.0.0", remote, err)
+        return net.IPv4zero
+    }
+    defer c.Close()
+    if la, ok := c.LocalAddr().(*net.UDPAddr); ok && la.IP != nil && la.IP.To4() != nil {
+        return la.IP
+    }
+    return net.IPv4zero
 }
 
 func (a *app) cleanup() {
@@ -171,32 +203,79 @@ func (a *app) migrateIntermediateConnection(newAddr string) error {
 		return fmt.Errorf("connection is already closed, cannot migrate")
 	}
 
-	newUDP, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
-	if err != nil {
-		return fmt.Errorf("failed to create new UDP socket: %v", err)
-	}
+    // Bind the new UDP socket to the provided local IP so the probe
+    // originates from the intended interface.
+    var laddr *net.UDPAddr
+    var network string
+    if ip := net.ParseIP(newAddr); ip != nil {
+        laddr = &net.UDPAddr{IP: ip, Port: 0}
+        if ip.To4() != nil {
+            network = "udp4"
+        } else {
+            network = "udp6"
+        }
+    } else {
+        // Fallback: let OS decide if parsing failed
+        laddr = &net.UDPAddr{Port: 0}
+        network = "udp4"
+        log.Printf("Warning: failed to parse newAddr '%s'; falling back to default bind", newAddr)
+    }
+
+    newUDP, err := net.ListenUDP(network, laddr)
+    if err != nil {
+        return fmt.Errorf("failed to create new UDP socket: %v", err)
+    }
+    ifName, _ := ifaceNameForIP(laddr.IP)
+    if ifName != "" {
+        if err := bindToDevice(newUDP, ifName); err != nil {
+            log.Printf("Warning: failed to bind new UDP socket to interface %s: %v", ifName, err)
+        } else {
+            log.Printf("New UDP socket bound to interface %s", ifName)
+        }
+    }
 	newTransport := &quic.Transport{Conn: newUDP}
 
-	path, err := a.conn.AddPath(newTransport)
+    // Pre-warm NAT/routing for the new socket by sending a dummy UDP packet
+    if srv, err := net.ResolveUDPAddr("udp4", a.cfg.serverAddr); err == nil {
+        _, _ = newUDP.WriteToUDP([]byte("WARMUP"), srv)
+        time.Sleep(300 * time.Millisecond)
+    } else {
+        log.Printf("Warning: failed to resolve server addr for warmup: %v", err)
+    }
+
+    path, err := a.conn.AddPath(newTransport)
 	if err != nil {
 		newUDP.Close()
-		return fmt.Errorf("failed to add new path: %v")
+		return fmt.Errorf("failed to add new path: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	log.Printf("Probing new path from %s to server", newAddr)
-	if err := path.Probe(ctx); err != nil {
-		newUDP.Close()
-		return fmt.Errorf("failed to probe new path: %v", err)
-	}
-
-	log.Printf("Switching to new path")
-	if err := path.Switch(); err != nil {
-		_ = path.Close()
-		newUDP.Close()
-		return fmt.Errorf("failed to switch to new path: %v", err)
-	}
+    // Try immediate switch if old path is likely gone; otherwise fallback to probe
+    if err := path.Switch(); err != nil {
+        log.Printf("Immediate switch to new path failed: %v; attempting probe/then switch", err)
+        var probeErr error
+        for i := 1; i <= 3; i++ {
+            ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+            log.Printf("Probing new path from %s (bind %s) to server %s [attempt %d]", newAddr, newUDP.LocalAddr().String(), a.conn.RemoteAddr(), i)
+            probeErr = path.Probe(ctx)
+            cancel()
+            if probeErr == nil {
+                break
+            }
+            time.Sleep(400 * time.Millisecond)
+        }
+        if probeErr != nil {
+            newUDP.Close()
+            return fmt.Errorf("failed to probe new path: %v", probeErr)
+        }
+        log.Printf("Switching to new path after successful probe")
+        if err := path.Switch(); err != nil {
+            _ = path.Close()
+            newUDP.Close()
+            return fmt.Errorf("failed to switch to new path: %v", err)
+        }
+    } else {
+        log.Printf("Switched to new path without prior probe (old path likely down)")
+    }
 
 	// Update our active transport and socket references for any future operations
 	a.transport = newTransport
