@@ -34,53 +34,53 @@ type Peer struct {
 	hpCancels []context.CancelFunc
 }
 
-func (s *Peer) Run() error {
-	if err := s.setupTLS(); err != nil {
+func (p *Peer) Run() error {
+	if err := p.setupTLS(); err != nil {
 		return fmt.Errorf("failed to setup TLS: %v", err)
 	}
-	s.networkMonitor = network_monitor.NewNetworkMonitor(s.onAddrChange)
-	if err := s.networkMonitor.Start(); err != nil {
+	p.networkMonitor = network_monitor.NewNetworkMonitor(p.onAddrChange)
+	if err := p.networkMonitor.Start(); err != nil {
 		return fmt.Errorf("failed to start network monitor: %v", err)
 	}
-	defer s.networkMonitor.Stop()
+	defer p.networkMonitor.Stop()
 
-	if err := s.setupTransport(); err != nil {
+	if err := p.setupTransport(); err != nil {
 		return fmt.Errorf("failed to setup transport: %v", err)
 	}
-	defer s.cleanup()
+	defer p.cleanup()
 
 	// Connect to the intermediate server
-	intermediateConn, err := ConnectToServer(s.config.serverAddr, s.tlsConfig, s.quicConfig, s.transport)
+	intermediateConn, err := ConnectToServer(p.config.serverAddr, p.tlsConfig, p.quicConfig, p.transport)
 	if err != nil {
 		return fmt.Errorf("failed to connect to intermediate server: %v", err)
 	}
 	defer intermediateConn.CloseWithError(0, "")
-	s.intermediateConn = intermediateConn
+	p.intermediateConn = intermediateConn
 	WaitForObservedAddress(intermediateConn)
 
 	// init peer discovery and handling
-	s.knownPeers = make(map[string]shared.PeerInfo)
-	go ManagePeerDiscovery(intermediateConn, s)
+	p.knownPeers = make(map[string]shared.PeerInfo)
+	go ManagePeerDiscovery(intermediateConn, p)
 
 	// monitor established connections and coordinate cancellation/handling
-	go s.monitorConnections()
+	go p.monitorConnections()
 
-	return s.runPeerListener()
+	return p.runPeerListener()
 }
 
-func (s *Peer) setupTLS() error {
-	cer, err := tls.LoadX509KeyPair(s.config.certFile, s.config.keyFile)
+func (p *Peer) setupTLS() error {
+	cer, err := tls.LoadX509KeyPair(p.config.certFile, p.config.keyFile)
 	if err != nil {
 		return fmt.Errorf("failed to load certificate: %v", err)
 	}
 
-	s.tlsConfig = &tls.Config{
+	p.tlsConfig = &tls.Config{
 		InsecureSkipVerify: true,
 		Certificates:       []tls.Certificate{cer},
 		NextProtos:         []string{"p2p-quic"},
 	}
 
-	s.quicConfig = &quic.Config{
+	p.quicConfig = &quic.Config{
 		AddressDiscoveryMode: 1,
 		KeepAlivePeriod:      30 * time.Second,
 		MaxIdleTimeout:       5 * time.Minute,
@@ -89,43 +89,43 @@ func (s *Peer) setupTLS() error {
 	return nil
 }
 
-func (s *Peer) setupTransport() error {
+func (p *Peer) setupTransport() error {
 	var err error
-	currentAddr, err := s.networkMonitor.GetCurrentAddress()
+	currentAddr, err := p.networkMonitor.GetCurrentAddress()
 	if err != nil {
 		return fmt.Errorf("failed to get current network address: %v", err)
 	}
 
 	log.Printf("Binding UDP transport to local address: %s", currentAddr.String())
-	s.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: currentAddr})
+	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: currentAddr})
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP: %v", err)
 	}
 
-	s.transport = &quic.Transport{
-		Conn: s.udpConn,
+	p.transport = &quic.Transport{
+		Conn: p.udpConn,
 	}
 
 	return nil
 }
 
-func (s *Peer) cleanup() {
-	if s.transport != nil {
-		s.transport.Close()
+func (p *Peer) cleanup() {
+	if p.transport != nil {
+		p.transport.Close()
 	}
-	if s.udpConn != nil {
-		s.udpConn.Close()
+	if p.udpConn != nil {
+		p.udpConn.Close()
 	}
 }
 
-func (s *Peer) runPeerListener() error {
-	ln, err := s.transport.Listen(s.tlsConfig, s.quicConfig)
+func (p *Peer) runPeerListener() error {
+	ln, err := p.transport.Listen(p.tlsConfig, p.quicConfig)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
 	defer ln.Close()
 
-	log.Printf("Start Server: 0.0.0.0:%d", serverPort)
+	log.Printf("Start peer listener on %s", ln.Addr().String())
 
 	for {
 		conn, err := ln.Accept(context.Background())
@@ -144,15 +144,15 @@ func (s *Peer) runPeerListener() error {
 	}
 }
 
-func (s *Peer) handleIncomingConnection(conn *quic.Conn) {
+func (p *Peer) handleIncomingConnection(conn *quic.Conn) {
 	log.Print("New Peer Connection Accepted. Setting up audio streaming...")
 
 	// stop any relay now that direct P2P is up
-	s.StopAudioRelay()
+	p.StopAudioRelay()
 
 	// Since we received the connection, we act as the "acceptor"
-	log.Printf("Acting as connection acceptor with role=%s", s.config.role)
-	handleCommunicationAsAcceptor(conn, s.config.role)
+	log.Printf("Acting as connection acceptor with role=%s", p.config.role)
+	handleCommunicationAsAcceptor(conn, p.config.role)
 }
 
 func (p *Peer) handleInitialPeers(peers []shared.PeerInfo) {
@@ -204,7 +204,7 @@ func (p *Peer) HandleNetworkChange(peerID, oldAddr, newAddr string) {
 	p.startHolePunching(newAddr)
 }
 
-func (p *Peer) StartHolePunchingToAllPeers(transport *quic.Transport, tlsConfig *tls.Config, quicConfig *quic.Config) {
+func (p *Peer) StartHolePunchingToAllPeers() {
 	log.Printf("Server starting hole punching to all known peers after network change")
 
 	if len(p.knownPeers) == 0 {
@@ -212,16 +212,11 @@ func (p *Peer) StartHolePunchingToAllPeers(transport *quic.Transport, tlsConfig 
 		return
 	}
 
-	// Update references for new network interface
-	p.transport = transport
-	p.tlsConfig = tlsConfig
-	p.quicConfig = quicConfig
-
 	for peerID, peer := range p.knownPeers {
 		log.Printf("Server starting hole punch to peer %s at %s", peerID, peer.Address)
 		ctx, cancel := context.WithCancel(context.Background())
 		p.hpCancels = append(p.hpCancels, cancel)
-		go attemptNATHolePunch(ctx, transport, peer.Address, tlsConfig, quicConfig, connectionEstablished)
+		go attemptNATHolePunch(ctx, p.transport, peer.Address, p.tlsConfig, p.quicConfig, connectionEstablished)
 	}
 }
 
@@ -267,7 +262,7 @@ func (s *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 		log.Printf("Failed to send server network change notification after migration: %v", err)
 	}
 
-	s.StartHolePunchingToAllPeers(s.transport, s.tlsConfig, s.quicConfig)
+	s.StartHolePunchingToAllPeers()
 }
 
 // monitorConnections waits for either acceptor or initiator connection events,
