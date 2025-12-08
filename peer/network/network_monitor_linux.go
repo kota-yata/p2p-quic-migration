@@ -13,13 +13,13 @@ import (
 )
 
 type NetworkMonitor struct {
-	currentAddress string
-	onChange       func(oldAddr, newAddr string)
+	currentAddress net.IP
+	onChange       func(oldAddr, newAddr net.IP)
 	updateChan     chan netlink.AddrUpdate
 	stopChan       chan struct{}
 }
 
-func NewNetworkMonitor(onChange func(oldAddr, newAddr string)) *NetworkMonitor {
+func NewNetworkMonitor(onChange func(oldAddr, newAddr net.IP)) *NetworkMonitor {
 	return &NetworkMonitor{
 		onChange:   onChange,
 		stopChan:   make(chan struct{}),
@@ -29,12 +29,12 @@ func NewNetworkMonitor(onChange func(oldAddr, newAddr string)) *NetworkMonitor {
 
 func (nm *NetworkMonitor) Start() error {
 	log.Printf("Netlink monitor initiated")
-	initialAddr, err := nm.getCurrentAddress()
+	initialAddr, err := nm.GetCurrentAddress()
 	if err != nil {
 		return fmt.Errorf("failed to get initial address: %w", err)
 	}
 	nm.currentAddress = initialAddr
-	log.Printf("Monitor started with initial address: %s", initialAddr)
+	log.Printf("Monitor started with initial address: %s", initialAddr.String())
 
 	// Subscribe to netlink address updates
 	if err := netlink.AddrSubscribe(nm.updateChan, nm.stopChan); err != nil {
@@ -58,10 +58,10 @@ func (nm *NetworkMonitor) Stop() {
 // The most desirable functionality here is to return the default route interface's IP.
 // However, Android devices sometimes lack a default route, so we fall back to selecting
 // an available non-loopback IPv4 address, prioritizing Wi-Fi and Ethernet interfaces.
-func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
+func (nm *NetworkMonitor) GetCurrentAddress() (net.IP, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
-		return "", fmt.Errorf("failed to get network interfaces: %w", err)
+		return nil, fmt.Errorf("failed to get network interfaces: %w", err)
 	}
 
 	var availableAddrs []net.IP
@@ -98,12 +98,12 @@ func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
 	}
 
 	if len(availableAddrs) >= 2 {
-		return availableAddrs[0].String(), nil
+		return availableAddrs[0], nil
 	} else if len(availableAddrs) == 1 {
-		return availableAddrs[0].String(), nil
+		return availableAddrs[0], nil
 	}
 
-	return "", fmt.Errorf("no suitable network interface found")
+	return nil, fmt.Errorf("no suitable network interface found")
 }
 
 func (nm *NetworkMonitor) monitorLoop() {
@@ -112,11 +112,11 @@ func (nm *NetworkMonitor) monitorLoop() {
 	for {
 		select {
 		case <-nm.updateChan:
-			newAddr, err := nm.getCurrentAddress()
+			newAddr, err := nm.GetCurrentAddress()
 			if err != nil {
 				continue
 			}
-			if newAddr != nm.currentAddress {
+			if !newAddr.Equal(nm.currentAddress) {
 				oldAddr := nm.currentAddress
 				nm.currentAddress = newAddr
 				if nm.onChange != nil {

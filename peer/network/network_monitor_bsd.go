@@ -14,13 +14,13 @@ import (
 const readBufferSize = 2048
 
 type NetworkMonitor struct {
-	currentAddress string
-	onChange       func(oldAddr, newAddr string)
+	currentAddress net.IP
+	onChange       func(oldAddr, newAddr net.IP)
 	fd             int
 	stopChan       chan bool
 }
 
-func NewNetworkMonitor(onChange func(oldAddr, newAddr string)) *NetworkMonitor {
+func NewNetworkMonitor(onChange func(oldAddr, newAddr net.IP)) *NetworkMonitor {
 	return &NetworkMonitor{
 		onChange: onChange,
 		stopChan: make(chan bool),
@@ -36,7 +36,7 @@ func (nm *NetworkMonitor) Start() error {
 		return fmt.Errorf("failed to create AF_ROUTE socket: %v", err)
 	}
 
-	initialAddr, err := nm.getCurrentAddress()
+	initialAddr, err := nm.GetCurrentAddress()
 	if err != nil {
 		unix.Close(nm.fd)
 		return fmt.Errorf("failed to get initial address: %v", err)
@@ -58,10 +58,10 @@ func (nm *NetworkMonitor) Stop() {
 }
 
 // Return the first non-loopback IPv4 address found on the system
-func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
+func (nm *NetworkMonitor) GetCurrentAddress() (net.IP, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	for _, addr := range addrs {
@@ -76,11 +76,11 @@ func (nm *NetworkMonitor) getCurrentAddress() (string, error) {
 		}
 
 		if ip != nil && !ip.IsLoopback() && ip.To4() != nil {
-			return ip.String(), nil
+			return ip, nil
 		}
 	}
 
-	return "", fmt.Errorf("no suitable network interface found")
+	return nil, fmt.Errorf("no suitable network interface found")
 }
 
 func (nm *NetworkMonitor) monitorLoop() {
@@ -105,12 +105,12 @@ func (nm *NetworkMonitor) monitorLoop() {
 			continue
 		}
 
-		newAddr, err := nm.getCurrentAddress()
+		newAddr, err := nm.GetCurrentAddress()
 		if err != nil {
 			continue
 		}
 
-		if newAddr != nm.currentAddress {
+		if !newAddr.Equal(nm.currentAddress) {
 			oldAddr := nm.currentAddress
 			nm.currentAddress = newAddr
 
