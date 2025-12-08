@@ -297,25 +297,29 @@ func (p *Peer) switchToAudioRelay(targetPeerID string) error {
 }
 
 func (s *Peer) onAddrChange(oldAddr, newAddr string) {
-	log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
+    log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
 
-	if s.intermediateConn == nil {
-		log.Println("No intermediate connection available for network change")
-		return
-	}
+    if s.intermediateConn == nil {
+        log.Println("No intermediate connection available for network change")
+        return
+    }
 
-	if err := s.migrateIntermediateConnection(newAddr); err != nil {
-		log.Printf("Failed to migrate server connection: %v", err)
-		return
-	}
+    // First, try QUIC path migration. If it fails, fall back to re-dialing
+    if err := s.migrateIntermediateConnection(newAddr); err != nil {
+        log.Printf("Migration failed (%v). Falling back to reconnecting over new interface...", err)
+        if err2 := s.reconnectIntermediate(newAddr); err2 != nil {
+            log.Printf("Reconnect over new interface failed: %v", err2)
+            return
+        }
+        log.Printf("Reconnected to intermediate server over %s", newAddr)
+    } else {
+        log.Printf("Successfully migrated server connection to new address: %s", newAddr)
+        if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
+            log.Printf("Failed to send server network change notification after migration: %v", err)
+        }
+    }
 
-	log.Printf("Successfully migrated server connection to new address: %s", newAddr)
-
-	if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
-		log.Printf("Failed to send server network change notification after migration: %v", err)
-	}
-
-	s.StartHolePunchingToAllPeers(s.transport, s.tlsConfig, s.quicConfig)
+    s.StartHolePunchingToAllPeers(s.transport, s.tlsConfig, s.quicConfig)
 }
 
 // monitorConnections waits for either acceptor or initiator connection events,
@@ -417,7 +421,51 @@ func (s *Peer) migrateIntermediateConnection(newAddr string) error {
 	s.transport = newTransport
 	s.udpConn = newUDPConn
 
-	return nil
+    return nil
+}
+
+// reconnectIntermediate closes the current connection and re-dials the
+// intermediate server using a UDP socket bound to newAddr.
+func (s *Peer) reconnectIntermediate(newAddr string) error {
+    // Close old connection and sockets
+    if s.intermediateConn != nil {
+        _ = s.intermediateConn.CloseWithError(0, "reconnect")
+    }
+    if s.transport != nil {
+        s.transport.Close()
+    }
+    if s.udpConn != nil {
+        s.udpConn.Close()
+    }
+
+    // Bind new UDP on the provided local IP
+    ip := net.ParseIP(newAddr)
+    if ip == nil || ip.To4() == nil {
+        return fmt.Errorf("invalid IPv4 address for reconnect: %s", newAddr)
+    }
+    udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: ip, Port: serverPort})
+    if err != nil {
+        return fmt.Errorf("failed to bind UDP on %s:%d: %w", newAddr, serverPort, err)
+    }
+    tr := &quic.Transport{Conn: udp}
+
+    // Connect to server using the new transport
+    conn, err := ConnectToServer(s.config.serverAddr, s.tlsConfig, s.quicConfig, tr)
+    if err != nil {
+        udp.Close()
+        return fmt.Errorf("connect failed after reconnect bind: %w", err)
+    }
+
+    s.udpConn = udp
+    s.transport = tr
+    s.intermediateConn = conn
+
+    WaitForObservedAddress(conn)
+
+    // Restart discovery + relay acceptors on the new connection
+    go ManagePeerDiscovery(conn, s)
+    go s.acceptRelayStreams()
+    return nil
 }
 
 // Send network change notification through the intermediate server
