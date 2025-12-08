@@ -290,7 +290,7 @@ func (s *Peer) migrateIntermediateConnection(newAddr string) error {
 		return fmt.Errorf("connection is already closed, cannot migrate")
 	}
 
-	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(newAddr), Port: 0})
+	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: serverPort})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection: %v", err)
 	}
