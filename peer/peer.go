@@ -227,7 +227,7 @@ func (p *Peer) acceptRelayStreams() {
 	for {
 		stream, err := p.intermediateConn.AcceptStream(context.Background())
 		if err != nil {
-			log.Printf("Error accepting relay stream from intermediate: %v", err)
+			// log.Printf("Error accepting relay stream from intermediate: %v", err)
 			continue
 		}
 
