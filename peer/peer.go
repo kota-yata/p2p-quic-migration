@@ -21,20 +21,17 @@ type ServerConfig struct {
 }
 
 type Peer struct {
-    config           *ServerConfig
-    tlsConfig        *tls.Config
-    quicConfig       *quic.Config
-    transport        *quic.Transport
-    udpConn          *net.UDPConn
-    intermediateConn *quic.Conn
-    // dedicated transport for intermediate server traffic
-    serverTransport  *quic.Transport
-    serverUDPConn    *net.UDPConn
-    networkMonitor   *network_monitor.NetworkMonitor
-    knownPeers       map[string]shared.PeerInfo
-    audioRelayStop   func()
-    // hole punch cancellation management
-    hpCancels []context.CancelFunc
+	config           *ServerConfig
+	tlsConfig        *tls.Config
+	quicConfig       *quic.Config
+	transport        *quic.Transport
+	udpConn          *net.UDPConn
+	intermediateConn *quic.Conn
+	networkMonitor   *network_monitor.NetworkMonitor
+	knownPeers       map[string]shared.PeerInfo
+	audioRelayStop   func()
+	// hole punch cancellation management
+	hpCancels []context.CancelFunc
 }
 
 func (p *Peer) Run() error {
@@ -47,16 +44,13 @@ func (p *Peer) Run() error {
 	}
 	defer p.networkMonitor.Stop()
 
-    if err := p.setupTransport(); err != nil {
-        return fmt.Errorf("failed to setup transport: %v", err)
-    }
-    if err := p.setupServerTransport(); err != nil {
-        return fmt.Errorf("failed to setup server transport: %v", err)
-    }
-    defer p.cleanup()
+	if err := p.setupTransport(); err != nil {
+		return fmt.Errorf("failed to setup transport: %v", err)
+	}
+	defer p.cleanup()
 
-    // Connect to the intermediate server using the dedicated server transport
-    intermediateConn, err := ConnectToServer(p.config.serverAddr, p.tlsConfig, p.quicConfig, p.serverTransport)
+	// Connect to the intermediate server
+	intermediateConn, err := ConnectToServer(p.config.serverAddr, p.tlsConfig, p.quicConfig, p.transport)
 	if err != nil {
 		return fmt.Errorf("failed to connect to intermediate server: %v", err)
 	}
@@ -97,11 +91,13 @@ func (p *Peer) setupTLS() error {
 
 func (p *Peer) setupTransport() error {
 	var err error
-	// Bind to all interfaces on a fixed port so the socket remains valid
-	// across interface/IP changes. The kernel selects the correct source IP
-	// per route, avoiding send failures when the primary interface changes.
-	log.Printf("Binding UDP transport to local address: 0.0.0.0")
-	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: net.IPv4zero})
+	currentAddr, err := p.networkMonitor.GetCurrentAddress()
+	if err != nil {
+		return fmt.Errorf("failed to get current network address: %v", err)
+	}
+
+	log.Printf("Binding UDP transport to local address: %s", currentAddr.String())
+	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: currentAddr})
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP: %v", err)
 	}
@@ -113,31 +109,13 @@ func (p *Peer) setupTransport() error {
 	return nil
 }
 
-func (p *Peer) setupServerTransport() error {
-    // Use a dedicated UDP socket for the intermediate server traffic.
-    // Bind to any address with an ephemeral port.
-    udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-    if err != nil {
-        return fmt.Errorf("failed to listen on UDP for server transport: %v", err)
-    }
-    p.serverUDPConn = udp
-    p.serverTransport = &quic.Transport{Conn: udp}
-    return nil
-}
-
 func (p *Peer) cleanup() {
-    if p.transport != nil {
-        p.transport.Close()
-    }
-    if p.udpConn != nil {
-        p.udpConn.Close()
-    }
-    if p.serverTransport != nil {
-        p.serverTransport.Close()
-    }
-    if p.serverUDPConn != nil {
-        p.serverUDPConn.Close()
-    }
+	if p.transport != nil {
+		p.transport.Close()
+	}
+	if p.udpConn != nil {
+		p.udpConn.Close()
+	}
 }
 
 func (p *Peer) runPeerListener() error {
@@ -272,12 +250,12 @@ func (s *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 		log.Println("No intermediate connection available for network change")
 		return
 	}
-	// Migrate the server connection to a fresh UDP socket bound to the new
-	// local address to avoid per-packet control data pointing at a stale IP.
+
 	if err := s.migrateIntermediateConnection(newAddr); err != nil {
 		log.Printf("Failed to migrate server connection: %v", err)
 		return
 	}
+
 	log.Printf("Successfully migrated server connection to new address: %s", newAddr)
 
 	if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
@@ -312,9 +290,7 @@ func (s *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		return fmt.Errorf("connection is already closed, cannot migrate")
 	}
 
-	// Bind a fresh UDP socket to the new local IP with an ephemeral port.
-	// Using a different socket avoids stale ancillary data on the old path.
-	newUDPConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: newAddr, Port: 0})
+	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: newAddr, Port: serverPort})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection: %v", err)
 	}
@@ -329,7 +305,7 @@ func (s *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		return fmt.Errorf("failed to add new path: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	log.Printf("Probing new path from %s to intermediate server", newAddr)
@@ -340,8 +316,8 @@ func (s *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		log.Printf("Path probing succeeded")
 	}
 
-    log.Printf("Switching to new path")
-    if err := path.Switch(); err != nil {
+	log.Printf("Switching to new path")
+	if err := path.Switch(); err != nil {
 		if closeErr := path.Close(); closeErr != nil {
 			log.Printf("Warning: failed to close path after switch failure: %v", closeErr)
 		}
@@ -349,28 +325,11 @@ func (s *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		return fmt.Errorf("failed to switch to new path: %v", err)
 	}
 
-    // Wait for the connection to report the new local address, then retire
-    // the old server transport/socket to avoid further sends on it.
-    target := newUDPConn.LocalAddr().String()
-    deadline := time.Now().Add(2 * time.Second)
-    for time.Now().Before(deadline) {
-        if s.intermediateConn.LocalAddr().String() == target {
-            break
-        }
-        time.Sleep(50 * time.Millisecond)
-    }
+	// Update the server's transport and UDP connection used for outgoing connections
+	s.transport = newTransport
+	s.udpConn = newUDPConn
 
-    // Close the old server transport/socket and replace references so cleanup works.
-    if s.serverTransport != nil {
-        s.serverTransport.Close()
-    }
-    if s.serverUDPConn != nil {
-        s.serverUDPConn.Close()
-    }
-    s.serverTransport = newTransport
-    s.serverUDPConn = newUDPConn
-
-    return nil
+	return nil
 }
 
 // Send network change notification through the intermediate server
@@ -379,10 +338,10 @@ func (s *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 		return fmt.Errorf("connection is closed")
 	}
 
-    oldFullAddr := oldAddr.String() + ":0"
-    // Report our P2P listener address (local socket bound for peer transport),
-    // so logs remain coherent even though the server uses the observed host.
-    newFullAddr := s.udpConn.LocalAddr().String()
+	oldFullAddr := oldAddr.String() + ":0"
+	// TODO: Remove new address report because the intermediate server won't use this anyway
+	// The server looks at the source address of the incoming connection, not newAddr in the payload
+	newFullAddr := s.intermediateConn.LocalAddr().String()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

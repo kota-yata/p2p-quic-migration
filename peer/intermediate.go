@@ -51,70 +51,36 @@ func WaitForObservedAddress(conn *quic.Conn) {
 
 // ManagePeerDiscovery exchanges peer info and handles ongoing notifications.
 func ManagePeerDiscovery(conn *quic.Conn, p *Peer) {
-    backoff := time.Second
-    const maxBackoff = 10 * time.Second
+	stream, err := conn.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Printf("Failed to open communication stream: %v", err)
+		return
+	}
+	defer stream.Close()
 
-    for {
-        // Open a fresh stream and register for peer updates
-        stream, err := conn.OpenStreamSync(context.Background())
-        if err != nil {
-            log.Printf("Failed to open communication stream: %v", err)
-            time.Sleep(backoff)
-            if backoff < maxBackoff {
-                backoff *= 2
-                if backoff > maxBackoff {
-                    backoff = maxBackoff
-                }
-            }
-            continue
-        }
+	if err := sendPeerRequest(stream); err != nil {
+		log.Printf("Failed to send peer request: %v", err)
+		return
+	}
 
-        if err := sendPeerRequest(stream); err != nil {
-            log.Printf("Failed to send peer request: %v", err)
-            _ = stream.Close()
-            time.Sleep(backoff)
-            if backoff < maxBackoff {
-                backoff *= 2
-                if backoff > maxBackoff {
-                    backoff = maxBackoff
-                }
-            }
-            continue
-        }
+	buffer := make([]byte, 4096)
+	isFirst := true
 
-        // reset backoff after a successful registration
-        backoff = time.Second
+	for {
+		n, err := stream.Read(buffer)
+		if err != nil {
+			log.Printf("Failed to read from intermediate server: %v", err)
+			return
+		}
 
-        buffer := make([]byte, 4096)
-        isFirst := true
-
-        for {
-            n, err := stream.Read(buffer)
-            if err != nil {
-                // Treat network blips (e.g., during migration) as transient
-                log.Printf("Peer discovery stream closed/read error: %v; will retry", err)
-                _ = stream.Close()
-                break
-            }
-
-            data := buffer[:n]
-            if isFirst {
-                handleInitialPeerList(p, data)
-                isFirst = false
-                continue
-            }
-            handlePeerNotification(p, data)
-        }
-
-        // loop to reopen a new stream
-        time.Sleep(backoff)
-        if backoff < maxBackoff {
-            backoff *= 2
-            if backoff > maxBackoff {
-                backoff = maxBackoff
-            }
-        }
-    }
+		data := buffer[:n]
+		if isFirst {
+			handleInitialPeerList(p, data)
+			isFirst = false
+			continue
+		}
+		handlePeerNotification(p, data)
+	}
 }
 
 func sendPeerRequest(stream *quic.Stream) error {
