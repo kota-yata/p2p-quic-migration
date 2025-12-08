@@ -21,17 +21,20 @@ type ServerConfig struct {
 }
 
 type Peer struct {
-	config           *ServerConfig
-	tlsConfig        *tls.Config
-	quicConfig       *quic.Config
-	transport        *quic.Transport
-	udpConn          *net.UDPConn
-	intermediateConn *quic.Conn
-	networkMonitor   *network_monitor.NetworkMonitor
-	knownPeers       map[string]shared.PeerInfo
-	audioRelayStop   func()
-	// hole punch cancellation management
-	hpCancels []context.CancelFunc
+    config           *ServerConfig
+    tlsConfig        *tls.Config
+    quicConfig       *quic.Config
+    transport        *quic.Transport
+    udpConn          *net.UDPConn
+    intermediateConn *quic.Conn
+    // dedicated transport for intermediate server traffic
+    serverTransport  *quic.Transport
+    serverUDPConn    *net.UDPConn
+    networkMonitor   *network_monitor.NetworkMonitor
+    knownPeers       map[string]shared.PeerInfo
+    audioRelayStop   func()
+    // hole punch cancellation management
+    hpCancels []context.CancelFunc
 }
 
 func (p *Peer) Run() error {
@@ -44,13 +47,16 @@ func (p *Peer) Run() error {
 	}
 	defer p.networkMonitor.Stop()
 
-	if err := p.setupTransport(); err != nil {
-		return fmt.Errorf("failed to setup transport: %v", err)
-	}
-	defer p.cleanup()
+    if err := p.setupTransport(); err != nil {
+        return fmt.Errorf("failed to setup transport: %v", err)
+    }
+    if err := p.setupServerTransport(); err != nil {
+        return fmt.Errorf("failed to setup server transport: %v", err)
+    }
+    defer p.cleanup()
 
-	// Connect to the intermediate server
-	intermediateConn, err := ConnectToServer(p.config.serverAddr, p.tlsConfig, p.quicConfig, p.transport)
+    // Connect to the intermediate server using the dedicated server transport
+    intermediateConn, err := ConnectToServer(p.config.serverAddr, p.tlsConfig, p.quicConfig, p.serverTransport)
 	if err != nil {
 		return fmt.Errorf("failed to connect to intermediate server: %v", err)
 	}
@@ -107,13 +113,31 @@ func (p *Peer) setupTransport() error {
 	return nil
 }
 
+func (p *Peer) setupServerTransport() error {
+    // Use a dedicated UDP socket for the intermediate server traffic.
+    // Bind to any address with an ephemeral port.
+    udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+    if err != nil {
+        return fmt.Errorf("failed to listen on UDP for server transport: %v", err)
+    }
+    p.serverUDPConn = udp
+    p.serverTransport = &quic.Transport{Conn: udp}
+    return nil
+}
+
 func (p *Peer) cleanup() {
-	if p.transport != nil {
-		p.transport.Close()
-	}
-	if p.udpConn != nil {
-		p.udpConn.Close()
-	}
+    if p.transport != nil {
+        p.transport.Close()
+    }
+    if p.udpConn != nil {
+        p.udpConn.Close()
+    }
+    if p.serverTransport != nil {
+        p.serverTransport.Close()
+    }
+    if p.serverUDPConn != nil {
+        p.serverUDPConn.Close()
+    }
 }
 
 func (p *Peer) runPeerListener() error {
@@ -316,8 +340,8 @@ func (s *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		log.Printf("Path probing succeeded")
 	}
 
-	log.Printf("Switching to new path")
-	if err := path.Switch(); err != nil {
+    log.Printf("Switching to new path")
+    if err := path.Switch(); err != nil {
 		if closeErr := path.Close(); closeErr != nil {
 			log.Printf("Warning: failed to close path after switch failure: %v", closeErr)
 		}
@@ -325,10 +349,28 @@ func (s *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		return fmt.Errorf("failed to switch to new path: %v", err)
 	}
 
-	// Keep the listener's transport/socket as-is; the new transport is now
-	// owned by the intermediate connection's path.
+    // Wait for the connection to report the new local address, then retire
+    // the old server transport/socket to avoid further sends on it.
+    target := newUDPConn.LocalAddr().String()
+    deadline := time.Now().Add(2 * time.Second)
+    for time.Now().Before(deadline) {
+        if s.intermediateConn.LocalAddr().String() == target {
+            break
+        }
+        time.Sleep(50 * time.Millisecond)
+    }
 
-	return nil
+    // Close the old server transport/socket and replace references so cleanup works.
+    if s.serverTransport != nil {
+        s.serverTransport.Close()
+    }
+    if s.serverUDPConn != nil {
+        s.serverUDPConn.Close()
+    }
+    s.serverTransport = newTransport
+    s.serverUDPConn = newUDPConn
+
+    return nil
 }
 
 // Send network change notification through the intermediate server
