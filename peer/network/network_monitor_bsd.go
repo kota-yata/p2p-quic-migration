@@ -36,7 +36,7 @@ func (nm *NetworkMonitor) Start() error {
 		return fmt.Errorf("failed to create AF_ROUTE socket: %v", err)
 	}
 
-	initialAddr, err := nm.getCurrentAddress()
+	initialAddr, err := nm.GetCurrentAddress()
 	if err != nil {
 		unix.Close(nm.fd)
 		return fmt.Errorf("failed to get initial address: %v", err)
@@ -58,7 +58,7 @@ func (nm *NetworkMonitor) Stop() {
 }
 
 // Return the first non-loopback IPv4 address found on the system
-func (nm *NetworkMonitor) getCurrentAddress() (net.IP, error) {
+func (nm *NetworkMonitor) GetCurrentAddress() (net.IP, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
 		return nil, err
@@ -105,7 +105,7 @@ func (nm *NetworkMonitor) monitorLoop() {
 			continue
 		}
 
-		newAddr, err := nm.getCurrentAddress()
+		newAddr, err := nm.GetCurrentAddress()
 		if err != nil {
 			continue
 		}

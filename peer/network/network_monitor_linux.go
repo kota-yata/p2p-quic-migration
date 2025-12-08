@@ -29,7 +29,7 @@ func NewNetworkMonitor(onChange func(oldAddr, newAddr net.IP)) *NetworkMonitor {
 
 func (nm *NetworkMonitor) Start() error {
 	log.Printf("Netlink monitor initiated")
-	initialAddr, err := nm.getCurrentAddress()
+	initialAddr, err := nm.GetCurrentAddress()
 	if err != nil {
 		return fmt.Errorf("failed to get initial address: %w", err)
 	}
@@ -58,7 +58,7 @@ func (nm *NetworkMonitor) Stop() {
 // The most desirable functionality here is to return the default route interface's IP.
 // However, Android devices sometimes lack a default route, so we fall back to selecting
 // an available non-loopback IPv4 address, prioritizing Wi-Fi and Ethernet interfaces.
-func (nm *NetworkMonitor) getCurrentAddress() (net.IP, error) {
+func (nm *NetworkMonitor) GetCurrentAddress() (net.IP, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get network interfaces: %w", err)
@@ -112,7 +112,7 @@ func (nm *NetworkMonitor) monitorLoop() {
 	for {
 		select {
 		case <-nm.updateChan:
-			newAddr, err := nm.getCurrentAddress()
+			newAddr, err := nm.GetCurrentAddress()
 			if err != nil {
 				continue
 			}

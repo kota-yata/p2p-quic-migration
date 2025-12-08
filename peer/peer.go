@@ -38,6 +38,11 @@ func (s *Peer) Run() error {
 	if err := s.setupTLS(); err != nil {
 		return fmt.Errorf("failed to setup TLS: %v", err)
 	}
+	s.networkMonitor = network_monitor.NewNetworkMonitor(s.onAddrChange)
+	if err := s.networkMonitor.Start(); err != nil {
+		return fmt.Errorf("failed to start network monitor: %v", err)
+	}
+	defer s.networkMonitor.Stop()
 
 	if err := s.setupTransport(); err != nil {
 		return fmt.Errorf("failed to setup transport: %v", err)
@@ -59,12 +64,6 @@ func (s *Peer) Run() error {
 
 	// monitor established connections and coordinate cancellation/handling
 	go s.monitorConnections()
-
-	s.networkMonitor = network_monitor.NewNetworkMonitor(s.onAddrChange)
-	if err := s.networkMonitor.Start(); err != nil {
-		return fmt.Errorf("failed to start network monitor: %v", err)
-	}
-	defer s.networkMonitor.Stop()
 
 	return s.runPeerListener()
 }
@@ -92,7 +91,13 @@ func (s *Peer) setupTLS() error {
 
 func (s *Peer) setupTransport() error {
 	var err error
-	s.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: net.IPv4zero})
+	currentAddr, err := s.networkMonitor.GetCurrentAddress()
+	if err != nil {
+		return fmt.Errorf("failed to get current network address: %v", err)
+	}
+
+	log.Printf("Binding UDP transport to local address: %s", currentAddr.String())
+	s.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: currentAddr})
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP: %v", err)
 	}
