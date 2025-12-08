@@ -114,7 +114,9 @@ func (s *Peer) setupTransport() error {
     }
 
     s.udpConn = udp
-    s.transport = &quic.Transport{Conn: udp}
+    // Wrap with tolerant PacketConn to avoid fatal errors when old path dies
+    pc := &tolerantPacketConn{PacketConn: udp, swallowENetUnreach: true}
+    s.transport = &quic.Transport{Conn: pc}
     log.Printf("UDP transport bound to %s", udp.LocalAddr())
     return nil
 }
@@ -387,9 +389,8 @@ func (s *Peer) migrateIntermediateConnection(newAddr string) error {
         }
     }
 
-	newTransport := &quic.Transport{
-		Conn: newUDPConn,
-	}
+    // New path transport (no need to swallow; but harmless if kept default)
+    newTransport := &quic.Transport{Conn: newUDPConn}
 
     // Pre-warm NAT/routing for the new socket by sending a dummy UDP packet
     if srv, err := net.ResolveUDPAddr("udp4", s.config.serverAddr); err == nil {
