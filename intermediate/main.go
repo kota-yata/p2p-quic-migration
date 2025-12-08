@@ -149,11 +149,11 @@ func (pr *PeerRegistry) handleNetworkChange(message, peerID string, conn *quic.C
 
 	oldAddr := parts[1]
 	clientReportedAddr := parts[2]
-	
+
 	// Use the observed external address instead of what the client reports
 	observedAddr := conn.RemoteAddr().String()
-	
-	log.Printf("Network change detected for peer %s: client reported %s -> %s, but using observed address %s", 
+
+	log.Printf("Network change detected for peer %s: client reported %s -> %s, but using observed address %s",
 		peerID, oldAddr, clientReportedAddr, observedAddr)
 
 	pr.mu.Lock()
