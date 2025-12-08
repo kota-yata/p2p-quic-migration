@@ -53,9 +53,12 @@ func (s *Peer) Run() error {
 	s.intermediateConn = intermediateConn
 	WaitForObservedAddress(intermediateConn)
 
-	// init peer discovery and handling
-	s.knownPeers = make(map[string]shared.PeerInfo)
-	go ManagePeerDiscovery(intermediateConn, s)
+    // init peer discovery and handling
+    s.knownPeers = make(map[string]shared.PeerInfo)
+    go ManagePeerDiscovery(intermediateConn, s)
+
+    // listen for incoming relay streams from the intermediate server (for receivers)
+    go s.acceptRelayStreams()
 
 	// monitor established connections and coordinate cancellation/handling
 	go s.monitorConnections()
@@ -175,11 +178,37 @@ func (p *Peer) startHolePunching(peerAddr string) {
 }
 
 func (p *Peer) StopAudioRelay() {
-	if p.audioRelayStop != nil {
-		log.Printf("Stopping audio relay due to P2P reconnection")
-		p.audioRelayStop()
-		p.audioRelayStop = nil
-	}
+    if p.audioRelayStop != nil {
+        log.Printf("Stopping audio relay due to P2P reconnection")
+        p.audioRelayStop()
+        p.audioRelayStop = nil
+    }
+}
+
+// acceptRelayStreams listens on the intermediate server connection for incoming
+// audio relay streams and starts playback when received.
+func (p *Peer) acceptRelayStreams() {
+    if p.intermediateConn == nil {
+        return
+    }
+    for {
+        stream, err := p.intermediateConn.AcceptStream(context.Background())
+        if err != nil {
+            log.Printf("Error accepting relay stream from intermediate: %v", err)
+            return
+        }
+
+        // Only play audio if our role includes receiving
+        if p.config != nil && (p.config.role == "receiver" || p.config.role == "both") {
+            log.Printf("Received incoming audio relay stream from intermediate server; starting playback")
+            // Stop any existing relay playback first
+            p.StopAudioRelay()
+            p.audioRelayStop = startAudioRelayPlayback(stream)
+        } else {
+            log.Printf("Role=%s is sender-only; closing incoming relay stream", p.config.role)
+            stream.Close()
+        }
+    }
 }
 
 func (p *Peer) HandleNetworkChange(peerID, oldAddr, newAddr string) {
@@ -280,6 +309,8 @@ func (s *Peer) monitorConnections() {
 		} else {
 			// Use remote addr for logging context
 			peerAddr := evt.conn.RemoteAddr().String()
+			// Stop any server-based audio relay now that direct P2P is up
+			s.StopAudioRelay()
 			handleCommunicationAsInitiator(evt.conn, peerAddr, s.config.role)
 		}
 	}

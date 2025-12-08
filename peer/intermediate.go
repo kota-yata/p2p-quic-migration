@@ -163,3 +163,39 @@ func startAudioRelay(stream *quic.Stream, targetPeerID string) func() {
 		}
 	}
 }
+
+// startAudioRelayPlayback starts playing audio from the provided stream and returns a stopper.
+func startAudioRelayPlayback(stream *quic.Stream) func() {
+    stop := make(chan struct{}, 1)
+
+    go func() {
+        defer stream.Close()
+
+        audioReceiver := NewAudioReceiver(stream)
+
+        done := make(chan error, 1)
+        go func() {
+            done <- audioReceiver.ReceiveAudio()
+        }()
+
+        select {
+        case err := <-done:
+            if err != nil {
+                log.Printf("Audio relay playback failed: %v", err)
+            } else {
+                log.Printf("Audio relay playback completed")
+            }
+        case <-stop:
+            log.Printf("Stopping audio relay playback (requested)")
+            stream.Close()
+            return
+        }
+    }()
+
+    return func() {
+        select {
+        case stop <- struct{}{}:
+        default:
+        }
+    }
+}
