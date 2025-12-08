@@ -258,11 +258,11 @@ func (s *Peer) onAddrChange(oldAddr, newAddr string) {
 
 	log.Printf("Successfully migrated server connection to new address: %s", newAddr)
 
-	s.StartHolePunchingToAllPeers(s.transport, s.tlsConfig, s.quicConfig)
-
 	if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
 		log.Printf("Failed to send server network change notification after migration: %v", err)
 	}
+
+	s.StartHolePunchingToAllPeers(s.transport, s.tlsConfig, s.quicConfig)
 }
 
 // monitorConnections waits for either acceptor or initiator connection events,
