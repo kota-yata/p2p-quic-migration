@@ -94,17 +94,41 @@ func (s *Peer) setupTLS() error {
 }
 
 func (s *Peer) setupTransport() error {
-	var err error
-	s.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: net.IPv4zero})
-	if err != nil {
-		return fmt.Errorf("failed to listen on UDP: %v", err)
-	}
+    // Prefer binding to the primary local IPv4 that would be used to reach the server
+    // so the QUIC connection originates from a concrete interface, not 0.0.0.0.
+    localIP := determineLocalIPv4ForRemote(s.config.serverAddr)
+    laddr := &net.UDPAddr{IP: localIP, Port: serverPort}
 
-	s.transport = &quic.Transport{
-		Conn: s.udpConn,
-	}
+    udp, err := net.ListenUDP("udp4", laddr)
+    if err != nil {
+        return fmt.Errorf("failed to listen on UDP %s: %v", laddr.String(), err)
+    }
 
-	return nil
+    s.udpConn = udp
+    s.transport = &quic.Transport{Conn: udp}
+    log.Printf("UDP transport bound to %s", udp.LocalAddr())
+    return nil
+}
+
+// determineLocalIPv4ForRemote returns the local IPv4 the OS would use to
+// reach the given remote UDP address. Falls back to 0.0.0.0 on failure.
+func determineLocalIPv4ForRemote(remote string) net.IP {
+    raddr, err := net.ResolveUDPAddr("udp4", remote)
+    if err != nil || raddr == nil {
+        log.Printf("Warning: failed to resolve remote '%s': %v; using 0.0.0.0", remote, err)
+        return net.IPv4zero
+    }
+    // Create a temporary UDP connection to learn the chosen local address
+    c, err := net.DialUDP("udp4", nil, raddr)
+    if err != nil {
+        log.Printf("Warning: failed to dial remote '%s' to determine local IP: %v; using 0.0.0.0", remote, err)
+        return net.IPv4zero
+    }
+    defer c.Close()
+    if la, ok := c.LocalAddr().(*net.UDPAddr); ok && la.IP != nil && la.IP.To4() != nil {
+        return la.IP
+    }
+    return net.IPv4zero
 }
 
 func (s *Peer) cleanup() {
