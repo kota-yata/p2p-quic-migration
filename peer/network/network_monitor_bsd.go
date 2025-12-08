@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -115,6 +116,7 @@ func (nm *NetworkMonitor) monitorLoop() {
 			nm.currentAddress = newAddr
 
 			if nm.onChange != nil {
+				time.Sleep(4 * time.Second) // Wait a moment for the system to stabilize
 				nm.onChange(oldAddr, newAddr)
 			}
 		}

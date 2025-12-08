@@ -120,7 +120,7 @@ func (nm *NetworkMonitor) monitorLoop() {
 				oldAddr := nm.currentAddress
 				nm.currentAddress = newAddr
 				if nm.onChange != nil {
-					time.Sleep(2 * time.Second) // brief delay to allow network to stabilize
+					time.Sleep(5 * time.Second) // brief delay to allow network to stabilize
 					nm.onChange(oldAddr, newAddr)
 				}
 			}
