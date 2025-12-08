@@ -103,6 +103,15 @@ func (s *Peer) setupTransport() error {
     if err != nil {
         return fmt.Errorf("failed to listen on UDP %s: %v", laddr.String(), err)
     }
+    // On Linux/Android, bind the socket to the specific interface that has this IP
+    ifName, _ := ifaceNameForIP(localIP)
+    if ifName != "" {
+        if err := bindToDevice(udp, ifName); err != nil {
+            log.Printf("Warning: failed to bind UDP socket to interface %s: %v", ifName, err)
+        } else {
+            log.Printf("UDP socket bound to interface %s", ifName)
+        }
+    }
 
     s.udpConn = udp
     s.transport = &quic.Transport{Conn: udp}
@@ -304,19 +313,15 @@ func (s *Peer) onAddrChange(oldAddr, newAddr string) {
         return
     }
 
-    // First, try QUIC path migration. If it fails, fall back to re-dialing
     if err := s.migrateIntermediateConnection(newAddr); err != nil {
-        log.Printf("Migration failed (%v). Falling back to reconnecting over new interface...", err)
-        if err2 := s.reconnectIntermediate(newAddr); err2 != nil {
-            log.Printf("Reconnect over new interface failed: %v", err2)
-            return
-        }
-        log.Printf("Reconnected to intermediate server over %s", newAddr)
-    } else {
-        log.Printf("Successfully migrated server connection to new address: %s", newAddr)
-        if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
-            log.Printf("Failed to send server network change notification after migration: %v", err)
-        }
+        log.Printf("Failed to migrate server connection: %v", err)
+        return
+    }
+
+    log.Printf("Successfully migrated server connection to new address: %s", newAddr)
+
+    if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
+        log.Printf("Failed to send server network change notification after migration: %v", err)
     }
 
     s.StartHolePunchingToAllPeers(s.transport, s.tlsConfig, s.quicConfig)
@@ -372,6 +377,16 @@ func (s *Peer) migrateIntermediateConnection(newAddr string) error {
         return fmt.Errorf("failed to create new UDP connection: %v", err)
     }
 
+    // Bind to the specific interface that owns newAddr (Linux/Android)
+    ifName, _ := ifaceNameForIP(laddr.IP)
+    if ifName != "" {
+        if err := bindToDevice(newUDPConn, ifName); err != nil {
+            log.Printf("Warning: failed to bind new UDP socket to interface %s: %v", ifName, err)
+        } else {
+            log.Printf("New UDP socket bound to interface %s", ifName)
+        }
+    }
+
 	newTransport := &quic.Transport{
 		Conn: newUDPConn,
 	}
@@ -417,54 +432,10 @@ func (s *Peer) migrateIntermediateConnection(newAddr string) error {
 		return fmt.Errorf("failed to switch to new path: %v", err)
 	}
 
-	// Update the server's transport and UDP connection used for outgoing connections
-	s.transport = newTransport
+    // Update the server's transport and UDP connection used for outgoing connections
+    s.transport = newTransport
 	s.udpConn = newUDPConn
 
-    return nil
-}
-
-// reconnectIntermediate closes the current connection and re-dials the
-// intermediate server using a UDP socket bound to newAddr.
-func (s *Peer) reconnectIntermediate(newAddr string) error {
-    // Close old connection and sockets
-    if s.intermediateConn != nil {
-        _ = s.intermediateConn.CloseWithError(0, "reconnect")
-    }
-    if s.transport != nil {
-        s.transport.Close()
-    }
-    if s.udpConn != nil {
-        s.udpConn.Close()
-    }
-
-    // Bind new UDP on the provided local IP
-    ip := net.ParseIP(newAddr)
-    if ip == nil || ip.To4() == nil {
-        return fmt.Errorf("invalid IPv4 address for reconnect: %s", newAddr)
-    }
-    udp, err := net.ListenUDP("udp4", &net.UDPAddr{IP: ip, Port: serverPort})
-    if err != nil {
-        return fmt.Errorf("failed to bind UDP on %s:%d: %w", newAddr, serverPort, err)
-    }
-    tr := &quic.Transport{Conn: udp}
-
-    // Connect to server using the new transport
-    conn, err := ConnectToServer(s.config.serverAddr, s.tlsConfig, s.quicConfig, tr)
-    if err != nil {
-        udp.Close()
-        return fmt.Errorf("connect failed after reconnect bind: %w", err)
-    }
-
-    s.udpConn = udp
-    s.transport = tr
-    s.intermediateConn = conn
-
-    WaitForObservedAddress(conn)
-
-    // Restart discovery + relay acceptors on the new connection
-    go ManagePeerDiscovery(conn, s)
-    go s.acceptRelayStreams()
     return nil
 }
 

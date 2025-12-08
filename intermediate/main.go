@@ -310,9 +310,11 @@ func main() {
 		NextProtos:   []string{"p2p-quic"},
 	}
 
-	quicConf := &quic.Config{
-		AddressDiscoveryMode: 0,
-	}
+    quicConf := &quic.Config{
+        // Enable address discovery/path validation so clients can migrate paths
+        // and the server will respond to PATH_CHALLENGE on new 4-tuples.
+        AddressDiscoveryMode: 1,
+    }
 
 	ln, err := quic.ListenAddr(*addr, tlsConf, quicConf)
 	if err != nil {
