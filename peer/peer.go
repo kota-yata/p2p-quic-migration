@@ -243,50 +243,50 @@ func (p *Peer) switchToAudioRelay(targetPeerID string) error {
 	return nil
 }
 
-func (s *Peer) onAddrChange(oldAddr, newAddr net.IP) {
+func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 	log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
 
-	if s.intermediateConn == nil {
+	if p.intermediateConn == nil {
 		log.Println("No intermediate connection available for network change")
 		return
 	}
 
-	if err := s.migrateIntermediateConnection(newAddr); err != nil {
+	if err := p.migrateIntermediateConnection(newAddr); err != nil {
 		log.Printf("Failed to migrate server connection: %v", err)
 		return
 	}
 
 	log.Printf("Successfully migrated server connection to new address: %s", newAddr)
 
-	if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
+	if err := p.sendNetworkChangeNotification(oldAddr); err != nil {
 		log.Printf("Failed to send server network change notification after migration: %v", err)
 	}
 
-	s.StartHolePunchingToAllPeers()
+	p.StartHolePunchingToAllPeers()
 }
 
 // monitorConnections waits for either acceptor or initiator connection events,
 // cancels outstanding hole punching attempts, and hands off to the proper handler.
-func (s *Peer) monitorConnections() {
+func (p *Peer) monitorConnections() {
 	for evt := range connectionEstablished {
 		// cancel any in-flight hole punching attempts
-		for _, c := range s.hpCancels {
+		for _, c := range p.hpCancels {
 			c()
 		}
-		s.hpCancels = nil
+		p.hpCancels = nil
 
 		if evt.isAcceptor {
-			s.handleIncomingConnection(evt.conn)
+			p.handleIncomingConnection(evt.conn)
 		} else {
 			// Use remote addr for logging context
 			peerAddr := evt.conn.RemoteAddr().String()
-			handleCommunicationAsInitiator(evt.conn, peerAddr, s.config.role)
+			handleCommunicationAsInitiator(evt.conn, peerAddr, p.config.role)
 		}
 	}
 }
 
-func (s *Peer) migrateIntermediateConnection(newAddr net.IP) error {
-	if s.intermediateConn.Context().Err() != nil {
+func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
+	if p.intermediateConn.Context().Err() != nil {
 		return fmt.Errorf("connection is already closed, cannot migrate")
 	}
 
@@ -299,7 +299,7 @@ func (s *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		Conn: newUDPConn,
 	}
 
-	path, err := s.intermediateConn.AddPath(newTransport)
+	path, err := p.intermediateConn.AddPath(newTransport)
 	if err != nil {
 		newUDPConn.Close()
 		return fmt.Errorf("failed to add new path: %v", err)
@@ -326,27 +326,27 @@ func (s *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 	}
 
 	// Update the server's transport and UDP connection used for outgoing connections
-	s.transport = newTransport
-	s.udpConn = newUDPConn
+	p.transport = newTransport
+	p.udpConn = newUDPConn
 
 	return nil
 }
 
 // Send network change notification through the intermediate server
-func (s *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
-	if s.intermediateConn.Context().Err() != nil {
+func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
+	if p.intermediateConn.Context().Err() != nil {
 		return fmt.Errorf("connection is closed")
 	}
 
 	oldFullAddr := oldAddr.String() + ":0"
 	// TODO: Remove new address report because the intermediate server won't use this anyway
 	// The server looks at the source address of the incoming connection, not newAddr in the payload
-	newFullAddr := s.intermediateConn.LocalAddr().String()
+	newFullAddr := p.intermediateConn.LocalAddr().String()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	stream, err := s.intermediateConn.OpenStreamSync(ctx)
+	stream, err := p.intermediateConn.OpenStreamSync(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to open stream: %v", err)
 	}
