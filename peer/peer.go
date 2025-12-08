@@ -379,10 +379,10 @@ func (s *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 		return fmt.Errorf("connection is closed")
 	}
 
-	oldFullAddr := oldAddr.String() + ":0"
-	// TODO: Remove new address report because the intermediate server won't use this anyway
-	// The server looks at the source address of the incoming connection, not newAddr in the payload
-	newFullAddr := s.intermediateConn.LocalAddr().String()
+    oldFullAddr := oldAddr.String() + ":0"
+    // Report our P2P listener address (local socket bound for peer transport),
+    // so logs remain coherent even though the server uses the observed host.
+    newFullAddr := s.udpConn.LocalAddr().String()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

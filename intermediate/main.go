@@ -24,6 +24,10 @@ type PeerRegistry struct {
 	audioRelays         map[string]*AudioRelaySession
 }
 
+// Port on which peers listen for P2P connections.
+// Must match the peer listener's serverPort (1234).
+const p2pListenPort = 1234
+
 // AudioRelaySession represents an active audio relay between two peers
 type AudioRelaySession struct {
 	sourcePeerID string
@@ -150,20 +154,25 @@ func (pr *PeerRegistry) handleNetworkChange(message, peerID string, conn *quic.C
 	oldAddr := parts[1]
 	clientReportedAddr := parts[2]
 	
-	// Use the observed external address instead of what the client reports
-	observedAddr := conn.RemoteAddr().String()
-	
-	log.Printf("Network change detected for peer %s: client reported %s -> %s, but using observed address %s", 
-		peerID, oldAddr, clientReportedAddr, observedAddr)
+	// Use the observed external IP, but pair it with the known P2P listen port.
+	obsHost, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		log.Printf("Failed to parse observed address for %s: %v", peerID, err)
+		return
+	}
+	p2pAddr := net.JoinHostPort(obsHost, fmt.Sprintf("%d", p2pListenPort))
+
+	log.Printf("Network change detected for peer %s: client reported %s -> %s; using %s for P2P",
+		peerID, oldAddr, clientReportedAddr, p2pAddr)
 
 	pr.mu.Lock()
 	if peer, exists := pr.peers[peerID]; exists {
-		peer.Address = observedAddr
+		peer.Address = p2pAddr
 		peer.LastSeen = time.Now()
 	}
 	pr.mu.Unlock()
 
-	pr.notifyPeersAboutNetworkChange(peerID, oldAddr, observedAddr)
+	pr.notifyPeersAboutNetworkChange(peerID, oldAddr, p2pAddr)
 }
 
 func (pr *PeerRegistry) handleAudioRelay(message, sourcePeerID string, sourceStream *quic.Stream) {
