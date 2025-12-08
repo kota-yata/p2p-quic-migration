@@ -372,22 +372,37 @@ func (s *Peer) migrateIntermediateConnection(newAddr string) error {
 		Conn: newUDPConn,
 	}
 
-	path, err := s.intermediateConn.AddPath(newTransport)
+    // Pre-warm NAT/routing for the new socket by sending a dummy UDP packet
+    if srv, err := net.ResolveUDPAddr("udp4", s.config.serverAddr); err == nil {
+        _, _ = newUDPConn.WriteToUDP([]byte("WARMUP"), srv)
+        time.Sleep(300 * time.Millisecond)
+    } else {
+        log.Printf("Warning: failed to resolve server addr for warmup: %v", err)
+    }
+
+    path, err := s.intermediateConn.AddPath(newTransport)
 	if err != nil {
 		newUDPConn.Close()
 		return fmt.Errorf("failed to add new path: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-    log.Printf("Probing new path from %s (bind %s) to intermediate server", newAddr, newUDPConn.LocalAddr().String())
-	if err := path.Probe(ctx); err != nil {
-		newUDPConn.Close()
-		return fmt.Errorf("failed to probe new path: %v", err)
-	} else {
-		log.Printf("Path probing succeeded")
-	}
+    // Try probing with a couple of short retries to let routes stabilize
+    var probeErr error
+    for i := 1; i <= 3; i++ {
+        ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+        log.Printf("Probing new path from %s (bind %s) to intermediate server [attempt %d]", newAddr, newUDPConn.LocalAddr().String(), i)
+        probeErr = path.Probe(ctx)
+        cancel()
+        if probeErr == nil {
+            log.Printf("Path probing succeeded on attempt %d", i)
+            break
+        }
+        time.Sleep(400 * time.Millisecond)
+    }
+    if probeErr != nil {
+        newUDPConn.Close()
+        return fmt.Errorf("failed to probe new path: %v", probeErr)
+    }
 
 	log.Printf("Switching to new path")
 	if err := path.Switch(); err != nil {
