@@ -53,12 +53,12 @@ func (s *Peer) Run() error {
 	s.intermediateConn = intermediateConn
 	WaitForObservedAddress(intermediateConn)
 
-    // init peer discovery and handling
-    s.knownPeers = make(map[string]shared.PeerInfo)
-    go ManagePeerDiscovery(intermediateConn, s)
+	// init peer discovery and handling
+	s.knownPeers = make(map[string]shared.PeerInfo)
+	go ManagePeerDiscovery(intermediateConn, s)
 
-    // listen for incoming relay streams from the intermediate server (for receivers)
-    go s.acceptRelayStreams()
+	// listen for incoming relay streams from the intermediate server (for receivers)
+	go s.acceptRelayStreams()
 
 	// monitor established connections and coordinate cancellation/handling
 	go s.monitorConnections()
@@ -94,50 +94,50 @@ func (s *Peer) setupTLS() error {
 }
 
 func (s *Peer) setupTransport() error {
-    // Prefer binding to the primary local IPv4 that would be used to reach the server
-    // so the QUIC connection originates from a concrete interface, not 0.0.0.0.
-    localIP := determineLocalIPv4ForRemote(s.config.serverAddr)
-    laddr := &net.UDPAddr{IP: localIP, Port: serverPort}
+	// Prefer binding to the primary local IPv4 that would be used to reach the server
+	// so the QUIC connection originates from a concrete interface, not 0.0.0.0.
+	localIP := determineLocalIPv4ForRemote(s.config.serverAddr)
+	laddr := &net.UDPAddr{IP: localIP, Port: serverPort}
 
-    udp, err := net.ListenUDP("udp4", laddr)
-    if err != nil {
-        return fmt.Errorf("failed to listen on UDP %s: %v", laddr.String(), err)
-    }
-    // On Linux/Android, bind the socket to the specific interface that has this IP
-    ifName, _ := ifaceNameForIP(localIP)
-    if ifName != "" {
-        if err := bindToDevice(udp, ifName); err != nil {
-            log.Printf("Warning: failed to bind UDP socket to interface %s: %v", ifName, err)
-        } else {
-            log.Printf("UDP socket bound to interface %s", ifName)
-        }
-    }
+	udp, err := net.ListenUDP("udp4", laddr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on UDP %s: %v", laddr.String(), err)
+	}
+	// On Linux/Android, bind the socket to the specific interface that has this IP
+	ifName, _ := ifaceNameForIP(localIP)
+	if ifName != "" {
+		if err := bindToDevice(udp, ifName); err != nil {
+			log.Printf("Warning: failed to bind UDP socket to interface %s: %v", ifName, err)
+		} else {
+			log.Printf("UDP socket bound to interface %s", ifName)
+		}
+	}
 
-    s.udpConn = udp
-    s.transport = &quic.Transport{Conn: udp}
-    log.Printf("UDP transport bound to %s", udp.LocalAddr())
-    return nil
+	s.udpConn = udp
+	s.transport = &quic.Transport{Conn: udp}
+	log.Printf("UDP transport bound to %s", udp.LocalAddr())
+	return nil
 }
 
 // determineLocalIPv4ForRemote returns the local IPv4 the OS would use to
 // reach the given remote UDP address. Falls back to 0.0.0.0 on failure.
 func determineLocalIPv4ForRemote(remote string) net.IP {
-    raddr, err := net.ResolveUDPAddr("udp4", remote)
-    if err != nil || raddr == nil {
-        log.Printf("Warning: failed to resolve remote '%s': %v; using 0.0.0.0", remote, err)
-        return net.IPv4zero
-    }
-    // Create a temporary UDP connection to learn the chosen local address
-    c, err := net.DialUDP("udp4", nil, raddr)
-    if err != nil {
-        log.Printf("Warning: failed to dial remote '%s' to determine local IP: %v; using 0.0.0.0", remote, err)
-        return net.IPv4zero
-    }
-    defer c.Close()
-    if la, ok := c.LocalAddr().(*net.UDPAddr); ok && la.IP != nil && la.IP.To4() != nil {
-        return la.IP
-    }
-    return net.IPv4zero
+	raddr, err := net.ResolveUDPAddr("udp4", remote)
+	if err != nil || raddr == nil {
+		log.Printf("Warning: failed to resolve remote '%s': %v; using 0.0.0.0", remote, err)
+		return net.IPv4zero
+	}
+	// Create a temporary UDP connection to learn the chosen local address
+	c, err := net.DialUDP("udp4", nil, raddr)
+	if err != nil {
+		log.Printf("Warning: failed to dial remote '%s' to determine local IP: %v; using 0.0.0.0", remote, err)
+		return net.IPv4zero
+	}
+	defer c.Close()
+	if la, ok := c.LocalAddr().(*net.UDPAddr); ok && la.IP != nil && la.IP.To4() != nil {
+		return la.IP
+	}
+	return net.IPv4zero
 }
 
 func (s *Peer) cleanup() {
@@ -211,37 +211,37 @@ func (p *Peer) startHolePunching(peerAddr string) {
 }
 
 func (p *Peer) StopAudioRelay() {
-    if p.audioRelayStop != nil {
-        log.Printf("Stopping audio relay due to P2P reconnection")
-        p.audioRelayStop()
-        p.audioRelayStop = nil
-    }
+	if p.audioRelayStop != nil {
+		log.Printf("Stopping audio relay due to P2P reconnection")
+		p.audioRelayStop()
+		p.audioRelayStop = nil
+	}
 }
 
 // acceptRelayStreams listens on the intermediate server connection for incoming
 // audio relay streams and starts playback when received.
 func (p *Peer) acceptRelayStreams() {
-    if p.intermediateConn == nil {
-        return
-    }
-    for {
-        stream, err := p.intermediateConn.AcceptStream(context.Background())
-        if err != nil {
-            log.Printf("Error accepting relay stream from intermediate: %v", err)
-            return
-        }
+	if p.intermediateConn == nil {
+		return
+	}
+	for {
+		stream, err := p.intermediateConn.AcceptStream(context.Background())
+		if err != nil {
+			log.Printf("Error accepting relay stream from intermediate: %v", err)
+			return
+		}
 
-        // Only play audio if our role includes receiving
-        if p.config != nil && (p.config.role == "receiver" || p.config.role == "both") {
-            log.Printf("Received incoming audio relay stream from intermediate server; starting playback")
-            // Stop any existing relay playback first
-            p.StopAudioRelay()
-            p.audioRelayStop = startAudioRelayPlayback(stream)
-        } else {
-            log.Printf("Role=%s is sender-only; closing incoming relay stream", p.config.role)
-            stream.Close()
-        }
-    }
+		// Only play audio if our role includes receiving
+		if p.config != nil && (p.config.role == "receiver" || p.config.role == "both") {
+			log.Printf("Received incoming audio relay stream from intermediate server; starting playback")
+			// Stop any existing relay playback first
+			p.StopAudioRelay()
+			p.audioRelayStop = startAudioRelayPlayback(stream)
+		} else {
+			log.Printf("Role=%s is sender-only; closing incoming relay stream", p.config.role)
+			stream.Close()
+		}
+	}
 }
 
 func (p *Peer) HandleNetworkChange(peerID, oldAddr, newAddr string) {
@@ -306,25 +306,26 @@ func (p *Peer) switchToAudioRelay(targetPeerID string) error {
 }
 
 func (s *Peer) onAddrChange(oldAddr, newAddr string) {
-    log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
+	log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
 
-    if s.intermediateConn == nil {
-        log.Println("No intermediate connection available for network change")
-        return
-    }
+	if s.intermediateConn == nil {
+		log.Println("No intermediate connection available for network change")
+		return
+	}
 
-    if err := s.migrateIntermediateConnection(newAddr); err != nil {
-        log.Printf("Failed to migrate server connection: %v", err)
-        return
-    }
+	if err := s.migrateIntermediateConnection(newAddr); err != nil {
+		log.Printf("Failed to migrate server connection: %v", err)
+		return
+	}
 
-    log.Printf("Successfully migrated server connection to new address: %s", newAddr)
+	log.Printf("Successfully migrated server connection to new address: %s", newAddr)
 
-    if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
-        log.Printf("Failed to send server network change notification after migration: %v", err)
-    }
+	if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
+		log.Printf("Failed to send server network change notification after migration: %v", err)
+	}
 
-    s.StartHolePunchingToAllPeers(s.transport, s.tlsConfig, s.quicConfig)
+	// safe goroutine
+	go s.StartHolePunchingToAllPeers(s.transport, s.tlsConfig, s.quicConfig)
 }
 
 // monitorConnections waits for either acceptor or initiator connection events,
@@ -354,93 +355,93 @@ func (s *Peer) migrateIntermediateConnection(newAddr string) error {
 		return fmt.Errorf("connection is already closed, cannot migrate")
 	}
 
-    // Bind the new UDP socket to the detected local IP to ensure the probe
-    // actually uses the intended interface (e.g., Wi‑Fi vs Cellular).
-    var laddr *net.UDPAddr
-    var network string
-    if ip := net.ParseIP(newAddr); ip != nil {
-        laddr = &net.UDPAddr{IP: ip, Port: 0}
-        if ip.To4() != nil {
-            network = "udp4"
-        } else {
-            network = "udp6"
-        }
-    } else {
-        // Fallback: let OS pick if parsing failed
-        laddr = &net.UDPAddr{Port: 0}
-        network = "udp4"
-        log.Printf("Warning: failed to parse newAddr '%s'; falling back to default bind", newAddr)
-    }
+	// Bind the new UDP socket to the detected local IP to ensure the probe
+	// actually uses the intended interface (e.g., Wi‑Fi vs Cellular).
+	var laddr *net.UDPAddr
+	var network string
+	if ip := net.ParseIP(newAddr); ip != nil {
+		laddr = &net.UDPAddr{IP: ip, Port: 0}
+		if ip.To4() != nil {
+			network = "udp4"
+		} else {
+			network = "udp6"
+		}
+	} else {
+		// Fallback: let OS pick if parsing failed
+		laddr = &net.UDPAddr{Port: 0}
+		network = "udp4"
+		log.Printf("Warning: failed to parse newAddr '%s'; falling back to default bind", newAddr)
+	}
 
-    newUDPConn, err := net.ListenUDP(network, laddr)
-    if err != nil {
-        return fmt.Errorf("failed to create new UDP connection: %v", err)
-    }
+	newUDPConn, err := net.ListenUDP(network, laddr)
+	if err != nil {
+		return fmt.Errorf("failed to create new UDP connection: %v", err)
+	}
 
-    // Bind to the specific interface that owns newAddr (Linux/Android)
-    ifName, _ := ifaceNameForIP(laddr.IP)
-    if ifName != "" {
-        if err := bindToDevice(newUDPConn, ifName); err != nil {
-            log.Printf("Warning: failed to bind new UDP socket to interface %s: %v", ifName, err)
-        } else {
-            log.Printf("New UDP socket bound to interface %s", ifName)
-        }
-    }
+	// Bind to the specific interface that owns newAddr (Linux/Android)
+	ifName, _ := ifaceNameForIP(laddr.IP)
+	if ifName != "" {
+		if err := bindToDevice(newUDPConn, ifName); err != nil {
+			log.Printf("Warning: failed to bind new UDP socket to interface %s: %v", ifName, err)
+		} else {
+			log.Printf("New UDP socket bound to interface %s", ifName)
+		}
+	}
 
-    // New path transport (no need to swallow; but harmless if kept default)
-    newTransport := &quic.Transport{Conn: newUDPConn}
+	// New path transport (no need to swallow; but harmless if kept default)
+	newTransport := &quic.Transport{Conn: newUDPConn}
 
-    // Pre-warm NAT/routing for the new socket by sending a dummy UDP packet
-    if srv, err := net.ResolveUDPAddr("udp4", s.config.serverAddr); err == nil {
-        _, _ = newUDPConn.WriteToUDP([]byte("WARMUP"), srv)
-        time.Sleep(300 * time.Millisecond)
-    } else {
-        log.Printf("Warning: failed to resolve server addr for warmup: %v", err)
-    }
+	// Pre-warm NAT/routing for the new socket by sending a dummy UDP packet
+	if srv, err := net.ResolveUDPAddr("udp4", s.config.serverAddr); err == nil {
+		_, _ = newUDPConn.WriteToUDP([]byte("WARMUP"), srv)
+		time.Sleep(300 * time.Millisecond)
+	} else {
+		log.Printf("Warning: failed to resolve server addr for warmup: %v", err)
+	}
 
-    path, err := s.intermediateConn.AddPath(newTransport)
+	path, err := s.intermediateConn.AddPath(newTransport)
 	if err != nil {
 		newUDPConn.Close()
 		return fmt.Errorf("failed to add new path: %v", err)
 	}
 
-    // Prefer immediate switch when old path is gone; then validate
-    if err := path.Switch(); err != nil {
-        log.Printf("Immediate switch to new path failed: %v; attempting probe/then switch", err)
-        // Try probing with a couple of short retries to let routes stabilize
-        var probeErr error
-        for i := 1; i <= 3; i++ {
-            ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-            log.Printf("Probing new path from %s (bind %s) to intermediate server [attempt %d]", newAddr, newUDPConn.LocalAddr().String(), i)
-            probeErr = path.Probe(ctx)
-            cancel()
-            if probeErr == nil {
-                log.Printf("Path probing succeeded on attempt %d", i)
-                break
-            }
-            time.Sleep(400 * time.Millisecond)
-        }
-        if probeErr != nil {
-            newUDPConn.Close()
-            return fmt.Errorf("failed to probe new path: %v", probeErr)
-        }
-        log.Printf("Switching to new path after successful probe")
-        if err := path.Switch(); err != nil {
-            if closeErr := path.Close(); closeErr != nil {
-                log.Printf("Warning: failed to close path after switch failure: %v", closeErr)
-            }
-            newUDPConn.Close()
-            return fmt.Errorf("failed to switch to new path: %v", err)
-        }
-    } else {
-        log.Printf("Switched to new path without prior probe (old path likely down)")
-    }
+	// Prefer immediate switch when old path is gone; then validate
+	if err := path.Switch(); err != nil {
+		log.Printf("Immediate switch to new path failed: %v; attempting probe/then switch", err)
+		// Try probing with a couple of short retries to let routes stabilize
+		var probeErr error
+		for i := 1; i <= 3; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			log.Printf("Probing new path from %s (bind %s) to intermediate server [attempt %d]", newAddr, newUDPConn.LocalAddr().String(), i)
+			probeErr = path.Probe(ctx)
+			cancel()
+			if probeErr == nil {
+				log.Printf("Path probing succeeded on attempt %d", i)
+				break
+			}
+			time.Sleep(400 * time.Millisecond)
+		}
+		if probeErr != nil {
+			newUDPConn.Close()
+			return fmt.Errorf("failed to probe new path: %v", probeErr)
+		}
+		log.Printf("Switching to new path after successful probe")
+		if err := path.Switch(); err != nil {
+			if closeErr := path.Close(); closeErr != nil {
+				log.Printf("Warning: failed to close path after switch failure: %v", closeErr)
+			}
+			newUDPConn.Close()
+			return fmt.Errorf("failed to switch to new path: %v", err)
+		}
+	} else {
+		log.Printf("Switched to new path without prior probe (old path likely down)")
+	}
 
-    // Update the server's transport and UDP connection used for outgoing connections
-    s.transport = newTransport
+	// Update the server's transport and UDP connection used for outgoing connections
+	s.transport = newTransport
 	s.udpConn = newUDPConn
 
-    return nil
+	return nil
 }
 
 // Send network change notification through the intermediate server
