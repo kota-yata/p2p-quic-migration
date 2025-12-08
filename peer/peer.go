@@ -228,7 +228,7 @@ func (p *Peer) acceptRelayStreams() {
 		stream, err := p.intermediateConn.AcceptStream(context.Background())
 		if err != nil {
 			log.Printf("Error accepting relay stream from intermediate: %v", err)
-			return
+			continue
 		}
 
 		// Only play audio if our role includes receiving
