@@ -90,17 +90,15 @@ func (p *Peer) setupTLS() error {
 }
 
 func (p *Peer) setupTransport() error {
-	var err error
-	currentAddr, err := p.networkMonitor.GetCurrentAddress()
-	if err != nil {
-		return fmt.Errorf("failed to get current network address: %v", err)
-	}
-
-	log.Printf("Binding UDP transport to local address: %s", currentAddr.String())
-	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: currentAddr})
-	if err != nil {
-		return fmt.Errorf("failed to listen on UDP: %v", err)
-	}
+    var err error
+    // Bind to all interfaces on a fixed port so the socket remains valid
+    // across interface/IP changes. The kernel selects the correct source IP
+    // per route, avoiding send failures when the primary interface changes.
+    log.Printf("Binding UDP transport to local address: 0.0.0.0")
+    p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: net.IPv4zero})
+    if err != nil {
+        return fmt.Errorf("failed to listen on UDP: %v", err)
+    }
 
 	p.transport = &quic.Transport{
 		Conn: p.udpConn,
@@ -244,25 +242,23 @@ func (p *Peer) switchToAudioRelay(targetPeerID string) error {
 }
 
 func (s *Peer) onAddrChange(oldAddr, newAddr net.IP) {
-	log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
+    log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
 
-	if s.intermediateConn == nil {
-		log.Println("No intermediate connection available for network change")
-		return
-	}
+    if s.intermediateConn == nil {
+        log.Println("No intermediate connection available for network change")
+        return
+    }
+    // With address-agnostic binding (0.0.0.0), the existing UDP socket stays
+    // valid and the OS will route future packets via the new interface. QUIC
+    // will observe the new 4-tuple without manual AddPath, so we only notify
+    // the server and restart peer hole punching.
+    log.Printf("Probing/skipping manual path migration; relying on Any-address binding")
 
-	if err := s.migrateIntermediateConnection(newAddr); err != nil {
-		log.Printf("Failed to migrate server connection: %v", err)
-		return
-	}
+    if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
+        log.Printf("Failed to send server network change notification after migration: %v", err)
+    }
 
-	log.Printf("Successfully migrated server connection to new address: %s", newAddr)
-
-	if err := s.sendNetworkChangeNotification(oldAddr); err != nil {
-		log.Printf("Failed to send server network change notification after migration: %v", err)
-	}
-
-	s.StartHolePunchingToAllPeers()
+    s.StartHolePunchingToAllPeers()
 }
 
 // monitorConnections waits for either acceptor or initiator connection events,
