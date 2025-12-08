@@ -290,10 +290,28 @@ func (s *Peer) migrateIntermediateConnection(newAddr string) error {
 		return fmt.Errorf("connection is already closed, cannot migrate")
 	}
 
-	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
-	if err != nil {
-		return fmt.Errorf("failed to create new UDP connection: %v", err)
-	}
+    // Bind the new UDP socket to the detected local IP to ensure the probe
+    // actually uses the intended interface (e.g., Wi‑Fi vs Cellular).
+    var laddr *net.UDPAddr
+    var network string
+    if ip := net.ParseIP(newAddr); ip != nil {
+        laddr = &net.UDPAddr{IP: ip, Port: 0}
+        if ip.To4() != nil {
+            network = "udp4"
+        } else {
+            network = "udp6"
+        }
+    } else {
+        // Fallback: let OS pick if parsing failed
+        laddr = &net.UDPAddr{Port: 0}
+        network = "udp4"
+        log.Printf("Warning: failed to parse newAddr '%s'; falling back to default bind", newAddr)
+    }
+
+    newUDPConn, err := net.ListenUDP(network, laddr)
+    if err != nil {
+        return fmt.Errorf("failed to create new UDP connection: %v", err)
+    }
 
 	newTransport := &quic.Transport{
 		Conn: newUDPConn,
@@ -308,7 +326,7 @@ func (s *Peer) migrateIntermediateConnection(newAddr string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	log.Printf("Probing new path from %s to intermediate server", newAddr)
+    log.Printf("Probing new path from %s (bind %s) to intermediate server", newAddr, newUDPConn.LocalAddr().String())
 	if err := path.Probe(ctx); err != nil {
 		newUDPConn.Close()
 		return fmt.Errorf("failed to probe new path: %v", err)
@@ -347,6 +365,7 @@ func (s *Peer) sendNetworkChangeNotification(oldAddr string) error {
 	defer cancel()
 
 	stream, err := s.intermediateConn.OpenStreamSync(ctx)
+	log.Printf("server addr %s, oldAddr %s, newAddr %s", s.intermediateConn.RemoteAddr().String(), oldFullAddr, newFullAddr)
 	if err != nil {
 		return fmt.Errorf("failed to open stream: %v", err)
 	}
