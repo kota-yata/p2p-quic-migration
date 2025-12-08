@@ -243,7 +243,7 @@ func (p *Peer) switchToAudioRelay(targetPeerID string) error {
 	return nil
 }
 
-func (s *Peer) onAddrChange(oldAddr, newAddr string) {
+func (s *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 	log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
 
 	if s.intermediateConn == nil {
@@ -285,12 +285,12 @@ func (s *Peer) monitorConnections() {
 	}
 }
 
-func (s *Peer) migrateIntermediateConnection(newAddr string) error {
+func (s *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 	if s.intermediateConn.Context().Err() != nil {
 		return fmt.Errorf("connection is already closed, cannot migrate")
 	}
 
-	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: serverPort})
+	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: newAddr, Port: serverPort})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection: %v", err)
 	}
@@ -333,12 +333,12 @@ func (s *Peer) migrateIntermediateConnection(newAddr string) error {
 }
 
 // Send network change notification through the intermediate server
-func (s *Peer) sendNetworkChangeNotification(oldAddr string) error {
+func (s *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	if s.intermediateConn.Context().Err() != nil {
 		return fmt.Errorf("connection is closed")
 	}
 
-	oldFullAddr := oldAddr + ":0"
+	oldFullAddr := oldAddr.String() + ":0"
 	// TODO: Remove new address report because the intermediate server won't use this anyway
 	// The server looks at the source address of the incoming connection, not newAddr in the payload
 	newFullAddr := s.intermediateConn.LocalAddr().String()
