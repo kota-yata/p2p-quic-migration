@@ -3,13 +3,21 @@ package main
 import (
 	"flag"
 	"log"
+
+	"github.com/quic-go/quic-go"
 )
 
 const (
 	serverPort = 1234
 )
 
-var connectionEstablished = make(chan bool, 1)
+// conn and role
+type connchan struct {
+	conn       *quic.Conn
+	isAcceptor bool
+}
+
+var connectionEstablished = make(chan connchan, 1)
 
 func main() {
 	config := parseFlags()
@@ -24,25 +32,22 @@ func main() {
 }
 
 func parseFlags() *ServerConfig {
-    key := flag.String("key", "server.key", "TLS key (requires -cert option)")
-    cert := flag.String("cert", "server.crt", "TLS certificate (requires -key option)")
-    serverAddr := flag.String("serverAddr", "203.178.143.72:12345", "Address to intermediary server")
-    role := flag.String("role", "both", "Peer role: sender, receiver, or both")
-    flag.Parse()
+	key := flag.String("key", "server.key", "TLS key (requires -cert option)")
+	cert := flag.String("cert", "server.crt", "TLS certificate (requires -key option)")
+	serverAddr := flag.String("serverAddr", "203.178.143.72:12345", "Address to intermediary server")
+	role := flag.String("role", "both", "Peer role: sender, receiver, or both")
+	flag.Parse()
 
-    cfg := &ServerConfig{
-        keyFile:    *key,
-        certFile:   *cert,
-        serverAddr: *serverAddr,
-        role:       *role,
-    }
+	cfg := &ServerConfig{
+		keyFile:    *key,
+		certFile:   *cert,
+		serverAddr: *serverAddr,
+		role:       *role,
+	}
 
-    switch cfg.role {
-    case "sender", "receiver", "both":
-        // ok
-    default:
-        log.Fatalf("invalid -role value: %s (allowed: sender, receiver, both)", cfg.role)
-    }
+	if *role != "sender" && *role != "receiver" && *role != "both" {
+		log.Fatalf("Invalid role specified: %s. Must be 'sender', 'receiver', or 'both'.", *role)
+	}
 
-    return cfg
+	return cfg
 }
