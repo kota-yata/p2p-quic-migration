@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,7 +13,7 @@ import (
 func main() {
 	log.Println("Starting network monitor test...")
 
-	monitor := network_monitor.NewNetworkMonitor(func(oldAddr, newAddr string) {
+	monitor := network_monitor.NewNetworkMonitor(func(oldAddr, newAddr net.IP) {
 		log.Printf("*** NETWORK CHANGE DETECTED ***")
 		log.Printf("Old address: %s", oldAddr)
 		log.Printf("New address: %s", newAddr)
