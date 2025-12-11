@@ -152,7 +152,7 @@ func waitForObservedAddress(conn *quic.Conn) {
 
 // onAddrChange performs QUIC connection migration to the intermediate server
 // only when the primary IP address has changed.
-func (a *app) onAddrChange(oldAddr, newAddr string) {
+func (a *app) onAddrChange(oldAddr, newAddr net.IP) {
 	log.Printf("Primary IP changed: %s -> %s", oldAddr, newAddr)
 	// if a.conn == nil || a.conn.Context().Err() != nil {
 	// 	log.Printf("Connection closed; skipping migration")
@@ -166,7 +166,7 @@ func (a *app) onAddrChange(oldAddr, newAddr string) {
 	log.Printf("Migration to new local address %s successful", newAddr)
 }
 
-func (a *app) migrateIntermediateConnection(newAddr string) error {
+func (a *app) migrateIntermediateConnection(newAddr net.IP) error {
 	if a.conn.Context().Err() != nil {
 		return fmt.Errorf("connection is already closed, cannot migrate")
 	}
