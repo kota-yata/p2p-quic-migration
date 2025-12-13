@@ -80,6 +80,10 @@ func (a *app) run() error {
 	log.Println("Connected to intermediate server. Waiting for primary IP changes...")
 	log.Println("Press Ctrl+C to exit.")
 
+	// Start sending a small heartbeat message periodically over a stream.
+	stopHeartbeat := a.startHeartbeat()
+	defer stopHeartbeat()
+
 	// Wait for termination signal
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -146,6 +150,51 @@ func waitForObservedAddress(conn *quic.Conn) {
 		if observedAddr := conn.GetObservedAddress(); observedAddr != nil {
 			log.Printf("Observed address: %s", observedAddr.String())
 			break
+		}
+	}
+}
+
+// startHeartbeat opens a stream and periodically writes a small text
+// message to keep traffic flowing. Returns a stopper function.
+func (a *app) startHeartbeat() func() {
+	if a.conn == nil {
+		return func() {}
+	}
+
+	stream, err := a.conn.OpenStreamSync(context.Background())
+	if err != nil {
+		log.Printf("Failed to open heartbeat stream: %v", err)
+		return func() {}
+	}
+
+	stop := make(chan struct{}, 1)
+
+	go func() {
+		defer stream.Close()
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		payload := []byte("HB\n")
+		for {
+			select {
+			case <-ticker.C:
+				// Avoid blocking forever if the peer isn't reading.
+				_ = stream.SetWriteDeadline(time.Now().Add(1 * time.Second))
+				if _, err := stream.Write(payload); err != nil {
+					log.Printf("Heartbeat write failed: %v", err)
+					return
+				}
+				log.Printf("Heartbeat sent")
+			case <-stop:
+				return
+			}
+		}
+	}()
+
+	return func() {
+		select {
+		case stop <- struct{}{}:
+		default:
 		}
 	}
 }
