@@ -70,7 +70,8 @@ func ManagePeerDiscovery(conn *quic.Conn, p *Peer) {
 		n, err := stream.Read(buffer)
 		if err != nil {
 			log.Printf("Failed to read from intermediate server: %v", err)
-			return
+			continue
+			// return
 		}
 
 		data := buffer[:n]
