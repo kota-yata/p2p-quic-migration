@@ -268,48 +268,106 @@ func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 // monitorConnections waits for either acceptor or initiator connection events,
 // cancels outstanding hole punching attempts, and hands off to the proper handler.
 func (p *Peer) monitorConnections() {
-	for evt := range connectionEstablished {
+	for first := range connectionEstablished {
 		// cancel any in-flight hole punching attempts
 		for _, c := range p.hpCancels {
 			c()
 		}
 		p.hpCancels = nil
 
-		if evt.isAcceptor {
-			p.handleIncomingConnection(evt.conn)
+		// Small window to coalesce a simultaneous reverse-connection event
+		// and deterministically choose a single QUIC connection for media.
+		var second *connchan
+		select {
+		case s := <-connectionEstablished:
+			second = &s
+		case <-time.After(500 * time.Millisecond):
+			// no competing connection arrived; proceed with the first
+		}
+
+		chosen := first
+		// If we have two competing connections, deterministically pick one
+		if second != nil {
+			chosenConn, otherConn := pickDeterministicConnection(first, *second)
+			chosen = chosenConn
+			// Close the unselected connection to avoid split-brain
+			otherConn.conn.CloseWithError(0, "closing duplicate QUIC connection")
+		}
+
+		if chosen.isAcceptor {
+			p.handleIncomingConnection(chosen.conn)
 		} else {
 			// Use remote addr for logging context
-			peerAddr := evt.conn.RemoteAddr().String()
-			handleCommunicationAsInitiator(evt.conn, peerAddr, p.config.role)
+			peerAddr := chosen.conn.RemoteAddr().String()
+			handleCommunicationAsInitiator(chosen.conn, peerAddr, p.config.role)
 		}
 	}
 }
 
+// pickDeterministicConnection selects a single connection when both an
+// initiator and an acceptor connection are established nearly simultaneously.
+// Rule: Let owner be the side whose local address string sorts lexicographically
+// before the remote address string. The owner keeps the connection it initiated;
+// the other side keeps the acceptor connection. This converges to a single
+// shared connection across both peers.
+// TODO: Decide acceptor and initiator from the intermediate server before starting hole punching
+func pickDeterministicConnection(a, b connchan) (chosen connchan, other connchan) {
+	// Prefer to have both roles if available
+	// Compute ordering using the addresses of the first connection; both
+	// connections are between the same endpoints, so the comparison is stable.
+	local := a.conn.LocalAddr().String()
+	remote := a.conn.RemoteAddr().String()
+	ownerIsLocal := local < remote
+
+	// Identify which of the two is the initiator vs acceptor
+	var initiator, acceptor *connchan
+	if a.isAcceptor {
+		acceptor = &a
+	} else {
+		initiator = &a
+	}
+	if b.isAcceptor {
+		acceptor = &b
+	} else {
+		initiator = &b
+	}
+
+	// If we only have one (shouldn't happen), return it
+	if initiator == nil || acceptor == nil {
+		return a, b
+	}
+
+	if ownerIsLocal {
+		return *initiator, *acceptor
+	}
+	return *acceptor, *initiator
+}
+
 func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
-    if p.intermediateConn.Context().Err() != nil {
-        return fmt.Errorf("connection is already closed, cannot migrate")
-    }
+	if p.intermediateConn.Context().Err() != nil {
+		return fmt.Errorf("connection is already closed, cannot migrate")
+	}
 
-    // Bind to an ephemeral port on the new address to avoid reusing the
-    // original fixed port, which can confuse NATs after interface changes.
-    newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: newAddr, Port: 0})
-    if err != nil {
-        return fmt.Errorf("failed to create new UDP connection: %v", err)
-    }
+	// Bind to an ephemeral port on the new address to avoid reusing the
+	// original fixed port, which can confuse NATs after interface changes.
+	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: newAddr, Port: 0})
+	if err != nil {
+		return fmt.Errorf("failed to create new UDP connection: %v", err)
+	}
 
-    newTransport := &quic.Transport{
-        Conn: newUDPConn,
-    }
+	newTransport := &quic.Transport{
+		Conn: newUDPConn,
+	}
 
-    // Keep references to old transport/socket so we can close them after a successful switch
-    oldTransport := p.transport
-    oldUDPConn := p.udpConn
+	// Keep references to old transport/socket so we can close them after a successful switch
+	oldTransport := p.transport
+	oldUDPConn := p.udpConn
 
-    path, err := p.intermediateConn.AddPath(newTransport)
-    if err != nil {
-        newUDPConn.Close()
-        return fmt.Errorf("failed to add new path: %v", err)
-    }
+	path, err := p.intermediateConn.AddPath(newTransport)
+	if err != nil {
+		newUDPConn.Close()
+		return fmt.Errorf("failed to add new path: %v", err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -320,67 +378,67 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		return fmt.Errorf("failed to probe new path: %v", err)
 	} else {
 		log.Printf("Path probing succeeded")
-    }
+	}
 
-    log.Printf("Switching to new path")
-    if err := path.Switch(); err != nil {
-        if closeErr := path.Close(); closeErr != nil {
-            log.Printf("Warning: failed to close path after switch failure: %v", closeErr)
-        }
-        newUDPConn.Close()
-        return fmt.Errorf("failed to switch to new path: %v", err)
-    }
+	log.Printf("Switching to new path")
+	if err := path.Switch(); err != nil {
+		if closeErr := path.Close(); closeErr != nil {
+			log.Printf("Warning: failed to close path after switch failure: %v", closeErr)
+		}
+		newUDPConn.Close()
+		return fmt.Errorf("failed to switch to new path: %v", err)
+	}
 
-    // Update the server's transport and UDP connection used for outgoing connections
-    p.transport = newTransport
-    p.udpConn = newUDPConn
+	// Update the server's transport and UDP connection used for outgoing connections
+	p.transport = newTransport
+	p.udpConn = newUDPConn
 
-    // Close the old transport/socket after switching to avoid dual bindings
-    if oldTransport != nil {
-        oldTransport.Close()
-    }
-    if oldUDPConn != nil {
-        oldUDPConn.Close()
-    }
+	// Close the old transport/socket after switching to avoid dual bindings
+	if oldTransport != nil {
+		oldTransport.Close()
+	}
+	if oldUDPConn != nil {
+		oldUDPConn.Close()
+	}
 
-    return nil
+	return nil
 }
 
 // Send network change notification through the intermediate server
 func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
-    if p.intermediateConn.Context().Err() != nil {
-        return fmt.Errorf("connection is closed")
-    }
+	if p.intermediateConn.Context().Err() != nil {
+		return fmt.Errorf("connection is closed")
+	}
 
-    oldFullAddr := oldAddr.String() + ":0"
-    // TODO: Remove new address report because the intermediate server won't use this anyway
-    // The server looks at the source address of the incoming connection, not newAddr in the payload
-    newFullAddr := p.intermediateConn.LocalAddr().String()
+	oldFullAddr := oldAddr.String() + ":0"
+	// TODO: Remove new address report because the intermediate server won't use this anyway
+	// The server looks at the source address of the incoming connection, not newAddr in the payload
+	newFullAddr := p.intermediateConn.LocalAddr().String()
 
-    // Try a few times with short backoff in case the new path isn't
-    // immediately ready for app data after switching.
-    notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldFullAddr, newFullAddr)
-    var lastErr error
-    for attempt := 1; attempt <= 3; attempt++ {
-        perAttemptTimeout := 1 * time.Second
-        ctx, cancel := context.WithTimeout(context.Background(), perAttemptTimeout)
-        stream, err := p.intermediateConn.OpenStreamSync(ctx)
-        cancel()
-        if err != nil {
-            lastErr = fmt.Errorf("open stream attempt %d failed: %w", attempt, err)
-        } else {
-            if _, err := stream.Write([]byte(notification)); err != nil {
-                lastErr = fmt.Errorf("write attempt %d failed: %w", attempt, err)
-                _ = stream.Close()
-            } else {
-                log.Printf("Sent server network change notification to intermediate server: %s -> %s (attempt %d)", oldFullAddr, newFullAddr, attempt)
-                _ = stream.Close()
-                return nil
-            }
-        }
+	// Try a few times with short backoff in case the new path isn't
+	// immediately ready for app data after switching.
+	notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldFullAddr, newFullAddr)
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		perAttemptTimeout := 1 * time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), perAttemptTimeout)
+		stream, err := p.intermediateConn.OpenStreamSync(ctx)
+		cancel()
+		if err != nil {
+			lastErr = fmt.Errorf("open stream attempt %d failed: %w", attempt, err)
+		} else {
+			if _, err := stream.Write([]byte(notification)); err != nil {
+				lastErr = fmt.Errorf("write attempt %d failed: %w", attempt, err)
+				_ = stream.Close()
+			} else {
+				log.Printf("Sent server network change notification to intermediate server: %s -> %s (attempt %d)", oldFullAddr, newFullAddr, attempt)
+				_ = stream.Close()
+				return nil
+			}
+		}
 
-        time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
-    }
+		time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
+	}
 
-    return fmt.Errorf("failed to send network change notification after migration: %v", lastErr)
+	return fmt.Errorf("failed to send network change notification after migration: %v", lastErr)
 }
