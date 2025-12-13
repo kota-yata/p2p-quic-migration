@@ -8,7 +8,7 @@ import (
 )
 
 const (
-	serverPort = 1234
+	peerPort = 1234
 )
 
 // conn and role

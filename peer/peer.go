@@ -97,7 +97,7 @@ func (p *Peer) setupTransport() error {
 	}
 
 	log.Printf("Binding UDP transport to local address: %s", currentAddr.String())
-	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: currentAddr})
+	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: peerPort, IP: currentAddr})
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP: %v", err)
 	}
