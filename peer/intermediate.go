@@ -114,10 +114,9 @@ func startAudioRelay(stream *quic.Stream, targetPeerID string) func() {
 	go func() {
 		defer stream.Close()
 
-		currentPosition := getCurrentAudioPosition()
-		log.Printf("Starting audio relay for peer %s from position %d bytes", targetPeerID, currentPosition)
+		log.Printf("Starting audio relay for peer %s from position %d bytes", targetPeerID, 0)
 
-		audioStreamer := NewAudioStreamerFromPosition(stream, currentPosition)
+		audioStreamer := NewAudioStreamerFromPosition(stream, 0)
 
 		done := make(chan error, 1)
 		go func() {

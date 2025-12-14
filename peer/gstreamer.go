@@ -23,7 +23,7 @@ type AudioStreamer struct {
 func NewAudioStreamer(stream *quic.Stream) *AudioStreamer {
 	return &AudioStreamer{
 		stream:     stream,
-		startBytes: getCurrentAudioPosition(),
+		startBytes: 0,
 	}
 }
 
@@ -34,22 +34,10 @@ func NewAudioStreamerFromPosition(stream *quic.Stream, startBytes int64) *AudioS
 	}
 }
 
-func getCurrentAudioPosition() int64 {
-	positionMutex.RLock()
-	defer positionMutex.RUnlock()
-	return globalAudioPosition
-}
-
-func updateAudioPosition(position int64) {
-	positionMutex.Lock()
-	defer positionMutex.Unlock()
-	globalAudioPosition = position
-}
-
 func (as *AudioStreamer) StreamAudio() error {
 	var cmd *exec.Cmd
 
-	log.Printf("Starting audio from beginning (mp3 source; position tracking resumes from current transmission)")
+	log.Printf("Starting audio from beginning")
 
 	// Use output.mp3 as the audio source. decodebin ensures mp3 is decoded to raw PCM.
 	cmd = exec.Command("gst-launch-1.0",
@@ -92,10 +80,7 @@ func (as *AudioStreamer) StreamAudio() error {
 
 	buffer := make([]byte, 4096)
 	totalBytesSent := int64(0)
-	totalBytesRead := int64(0)
 	readCount := 0
-
-	log.Printf("Will skip %d bytes to resume from correct position", as.startBytes)
 
 	for {
 		n, err := stdout.Read(buffer)
@@ -110,33 +95,16 @@ func (as *AudioStreamer) StreamAudio() error {
 		}
 
 		if n > 0 {
-			totalBytesRead += int64(n)
-
-			if totalBytesRead <= as.startBytes {
-				continue
+			written, err := as.stream.Write(buffer[:n])
+			if err != nil {
+				return fmt.Errorf("failed to write audio data to stream after %d bytes: %v", totalBytesSent, err)
 			}
+			totalBytesSent += int64(written)
 
-			var dataToSend []byte
-			if totalBytesRead-int64(n) < as.startBytes {
-				skipInThisBuffer := as.startBytes - (totalBytesRead - int64(n))
-				dataToSend = buffer[skipInThisBuffer:n]
-				log.Printf("Partial skip: skipping %d bytes from this %d byte buffer", skipInThisBuffer, n)
-			} else {
-				dataToSend = buffer[:n]
-			}
+			log.Printf("Streamed %d bytes of audio data", totalBytesSent)
 
-			if len(dataToSend) > 0 {
-				written, err := as.stream.Write(dataToSend)
-				if err != nil {
-					return fmt.Errorf("failed to write audio data to stream after %d bytes: %v", totalBytesSent, err)
-				}
-				totalBytesSent += int64(written)
-
-				updateAudioPosition(as.startBytes + totalBytesSent)
-
-				if totalBytesSent%262144 == 0 {
-					log.Printf("Sent %.1f MB of audio data", float64(totalBytesSent)/1048576)
-				}
+			if totalBytesSent%262144 == 0 {
+				log.Printf("Sent %.1f MB of audio data", float64(totalBytesSent)/1048576)
 			}
 		}
 	}
@@ -151,16 +119,6 @@ func (as *AudioStreamer) StreamAudio() error {
 
 	log.Printf("Audio streaming completed successfully. Total bytes sent: %d", totalBytesSent)
 	return nil
-}
-
-type VideoStreamer struct {
-	stream *quic.Stream
-}
-
-func NewVideoStreamer(stream *quic.Stream) *VideoStreamer {
-	return &VideoStreamer{
-		stream: stream,
-	}
 }
 
 type AudioReceiver struct {
