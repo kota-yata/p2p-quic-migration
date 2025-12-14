@@ -21,15 +21,16 @@ type ServerConfig struct {
 }
 
 type Peer struct {
-	config           *ServerConfig
-	tlsConfig        *tls.Config
-	quicConfig       *quic.Config
-	transport        *quic.Transport
-	udpConn          *net.UDPConn
-	intermediateConn *quic.Conn
-	networkMonitor   *network_monitor.NetworkMonitor
-	knownPeers       map[string]shared.PeerInfo
-	audioRelayStop   func()
+	config             *ServerConfig
+	tlsConfig          *tls.Config
+	quicConfig         *quic.Config
+	transport          *quic.Transport
+	udpConn            *net.UDPConn
+	intermediateConn   *quic.Conn
+	intermediateStream *quic.Stream
+	networkMonitor     *network_monitor.NetworkMonitor
+	knownPeers         map[string]shared.PeerInfo
+	audioRelayStop     func()
 	// hole punch cancellation management
 	hpCancels []context.CancelFunc
 }
@@ -56,11 +57,17 @@ func (p *Peer) Run() error {
 	}
 	defer intermediateConn.CloseWithError(0, "")
 	p.intermediateConn = intermediateConn
-	WaitForObservedAddress(intermediateConn)
+	// WaitForObservedAddress(intermediateConn)
 
 	// init peer discovery and handling
 	p.knownPeers = make(map[string]shared.PeerInfo)
-	go IntermediateReadLoop(intermediateConn, p)
+	stream, err := intermediateConn.OpenStreamSync(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to open peer discovery stream: %v", err)
+	}
+	defer stream.Close()
+	p.intermediateStream = stream
+	go IntermediateReadLoop(intermediateConn, p, stream)
 
 	// monitor established connections and coordinate cancellation/handling
 	go p.monitorHolepunch()
@@ -308,12 +315,12 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		Conn: newUDPConn,
 	}
 
-    // Keep references to old transport/socket (do not close immediately).
-    // Closing the original Transport can cancel the connection's context
-    // even after a successful path switch. We intentionally keep it alive.
-    // These may be cleaned up on process shutdown.
-    // oldTransport := p.transport
-    // oldUDPConn := p.udpConn
+	// Keep references to old transport/socket (do not close immediately).
+	// Closing the original Transport can cancel the connection's context
+	// even after a successful path switch. We intentionally keep it alive.
+	// These may be cleaned up on process shutdown.
+	// oldTransport := p.transport
+	// oldUDPConn := p.udpConn
 
 	path, err := p.intermediateConn.AddPath(newTransport)
 	if err != nil {
@@ -345,10 +352,10 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 	p.transport = newTransport
 	p.udpConn = newUDPConn
 
-    // Note: Do NOT close the old transport or UDP socket here. The connection
-    // is still owned by the original transport, and closing it may cancel the
-    // connection's context. We prefer to leak these resources until shutdown
-    // rather than break the migrated connection.
+	// Note: Do NOT close the old transport or UDP socket here. The connection
+	// is still owned by the original transport, and closing it may cancel the
+	// connection's context. We prefer to leak these resources until shutdown
+	// rather than break the migrated connection.
 
 	return nil
 }
@@ -370,21 +377,13 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
 		log.Printf("Attempting to send network change notification (attempt %d)...", attempt)
-        perAttemptTimeout := 1 * time.Second
-        ctx, cancel := context.WithTimeout(context.Background(), perAttemptTimeout)
-        stream, err := p.intermediateConn.OpenStreamSync(ctx)
-        cancel()
-		if err != nil {
-			lastErr = fmt.Errorf("open stream attempt %d failed: %w", attempt, err)
+		if _, err := p.intermediateStream.Write([]byte(notification)); err != nil {
+			lastErr = fmt.Errorf("write attempt %d failed: %w", attempt, err)
+			_ = p.intermediateStream.Close()
 		} else {
-			if _, err := stream.Write([]byte(notification)); err != nil {
-				lastErr = fmt.Errorf("write attempt %d failed: %w", attempt, err)
-				_ = stream.Close()
-			} else {
-				log.Printf("Sent server network change notification to intermediate server: %s -> %s (attempt %d)", oldFullAddr, newFullAddr, attempt)
-				_ = stream.Close()
-				return nil
-			}
+			log.Printf("Sent server network change notification to intermediate server: %s -> %s (attempt %d)", oldFullAddr, newFullAddr, attempt)
+			_ = p.intermediateStream.Close()
+			return nil
 		}
 
 		time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)

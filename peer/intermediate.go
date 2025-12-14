@@ -50,14 +50,7 @@ func WaitForObservedAddress(conn *quic.Conn) {
 }
 
 // IntermediateReadLoop exchanges peer info and handles ongoing notifications.
-func IntermediateReadLoop(conn *quic.Conn, p *Peer) {
-	stream, err := conn.OpenStreamSync(context.Background())
-	if err != nil {
-		log.Printf("Failed to open communication stream: %v", err)
-		return
-	}
-	defer stream.Close()
-
+func IntermediateReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) {
 	if err := sendPeerRequest(stream); err != nil {
 		log.Printf("Failed to send peer request: %v", err)
 		return
