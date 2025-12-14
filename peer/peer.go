@@ -268,80 +268,21 @@ func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 // monitorHolepunch waits for either acceptor or initiator connection events,
 // cancels outstanding hole punching attempts, and hands off to the proper handler.
 func (p *Peer) monitorHolepunch() {
-	for first := range connectionEstablished {
-		// cancel any in-flight hole punching attempts
-		for _, c := range p.hpCancels {
-			c()
-		}
-		p.hpCancels = nil
+    for evt := range connectionEstablished {
+        // cancel any in-flight hole punching attempts
+        for _, c := range p.hpCancels {
+            c()
+        }
+        p.hpCancels = nil
 
-		// Small window to coalesce a simultaneous reverse-connection event
-		// and deterministically choose a single QUIC connection for media.
-		var second *connchan
-		select {
-		case s := <-connectionEstablished:
-			second = &s
-		case <-time.After(500 * time.Millisecond):
-			// no competing connection arrived; proceed with the first
-		}
-
-		chosen := first
-		// If we have two competing connections, deterministically pick one
-		if second != nil {
-			chosenConn, otherConn := pickDeterministicConnection(first, *second)
-			chosen = chosenConn
-			// Close the unselected connection to avoid split-brain
-			otherConn.conn.CloseWithError(0, "closing duplicate QUIC connection")
-		}
-
-		if chosen.isAcceptor {
-			p.handleIncomingConnection(chosen.conn)
-		} else {
-			// Use remote addr for logging context
-			peerAddr := chosen.conn.RemoteAddr().String()
-			handleCommunicationAsInitiator(chosen.conn, peerAddr, p.config.role)
-		}
-	}
-}
-
-// pickDeterministicConnection selects a single connection when both an
-// initiator and an acceptor connection are established nearly simultaneously.
-// Rule: Let owner be the side whose local address string sorts lexicographically
-// before the remote address string. The owner keeps the connection it initiated;
-// the other side keeps the acceptor connection. This converges to a single
-// shared connection across both peers.
-// TODO: Decide acceptor and initiator from the intermediate server before starting hole punching
-// then this function is not needed.
-func pickDeterministicConnection(a, b connchan) (chosen connchan, other connchan) {
-	// Prefer to have both roles if available
-	// Compute ordering using the addresses of the first connection; both
-	// connections are between the same endpoints, so the comparison is stable.
-	local := a.conn.LocalAddr().String()
-	remote := a.conn.RemoteAddr().String()
-	ownerIsLocal := local < remote
-
-	// Identify which of the two is the initiator vs acceptor
-	var initiator, acceptor *connchan
-	if a.isAcceptor {
-		acceptor = &a
-	} else {
-		initiator = &a
-	}
-	if b.isAcceptor {
-		acceptor = &b
-	} else {
-		initiator = &b
-	}
-
-	// If we only have one (shouldn't happen), return it
-	if initiator == nil || acceptor == nil {
-		return a, b
-	}
-
-	if ownerIsLocal {
-		return *initiator, *acceptor
-	}
-	return *acceptor, *initiator
+        if evt.isAcceptor {
+            p.handleIncomingConnection(evt.conn)
+        } else {
+            // Use remote addr for logging context
+            peerAddr := evt.conn.RemoteAddr().String()
+            handleCommunicationAsInitiator(evt.conn, peerAddr, p.config.role)
+        }
+    }
 }
 
 func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
