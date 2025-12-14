@@ -395,8 +395,8 @@ func (p *Peer) acceptIntermediateStreams() {
 	for {
 		stream, err := p.intermediateConn.AcceptStream(context.Background())
 		if err != nil {
-			log.Printf("Error accepting stream from intermediate: %v", err)
-			return
+			// log.Printf("Error accepting stream from intermediate: %v", err)
+			continue
 		}
 		log.Printf("Accepted incoming relay stream from intermediate server")
 		go handleIncomingAudioStream(stream, "relay")

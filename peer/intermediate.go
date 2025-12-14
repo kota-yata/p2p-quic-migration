@@ -51,8 +51,8 @@ func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) 
 	for {
 		n, err := stream.Read(buffer)
 		if err != nil {
-			log.Printf("Failed to read from intermediate server: %v", err)
-			return
+			// log.Printf("Failed to read from intermediate server: %v", err)
+			continue
 		}
 
 		log.Printf("Received %d bytes from intermediate server", n)
