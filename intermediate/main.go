@@ -302,9 +302,7 @@ func main() {
 		NextProtos:   []string{"p2p-quic"},
 	}
 
-	quicConf := &quic.Config{
-		AddressDiscoveryMode: 0,
-	}
+	quicConf := &quic.Config{}
 
 	ln, err := quic.ListenAddr(*addr, tlsConf, quicConf)
 	if err != nil {
