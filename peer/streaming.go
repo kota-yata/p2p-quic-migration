@@ -98,8 +98,8 @@ func acceptStreamsFromPeer(conn *quic.Conn, who string, role string) {
 	for {
 		stream, err := conn.AcceptStream(context.Background())
 		if err != nil {
-			// log.Printf("%s error accepting incoming stream: %v", who, err)
-			continue
+			log.Printf("%s error accepting incoming stream: %v", who, err)
+			return
 		}
 
 		streamCount++

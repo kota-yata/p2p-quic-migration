@@ -223,8 +223,7 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 				log.Printf("Audio stream reception completed. Total bytes received: %d", totalBytes)
 				break
 			}
-			// return fmt.Errorf("failed to read from stream: %v", err)
-			continue
+			return fmt.Errorf("failed to read from stream: %v", err)
 		}
 
 		if n > 0 {
