@@ -117,11 +117,18 @@ func (p *Peer) setupTransport() error {
 }
 
 func (p *Peer) cleanup() {
+	log.Printf("Cleaning up resources...")
 	if p.transport != nil {
 		p.transport.Close()
 	}
 	if p.udpConn != nil {
 		p.udpConn.Close()
+	}
+	if p.intermediateConn != nil {
+		p.intermediateConn.CloseWithError(0, "")
+	}
+	if p.networkMonitor != nil {
+		p.networkMonitor.Stop()
 	}
 }
 
@@ -382,7 +389,7 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 			_ = p.intermediateStream.Close()
 		} else {
 			log.Printf("Sent server network change notification to intermediate server: %s -> %s (attempt %d)", oldFullAddr, newFullAddr, attempt)
-			_ = p.intermediateStream.Close()
+			// _ = p.intermediateStream.Close()
 			return nil
 		}
 
