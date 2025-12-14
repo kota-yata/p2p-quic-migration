@@ -266,6 +266,7 @@ func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 
 	if err := p.sendNetworkChangeNotification(oldAddr); err != nil {
 		log.Printf("Failed to send server network change notification after migration: %v", err)
+		return
 	}
 
 	p.StartHolePunchingToAllPeers()
@@ -355,7 +356,7 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 // Send network change notification through the intermediate server
 func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	if p.intermediateConn.Context().Err() != nil {
-		return fmt.Errorf("connection is closed")
+		return p.intermediateConn.Context().Err()
 	}
 
 	oldFullAddr := oldAddr.String() + ":0"
@@ -389,5 +390,5 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 		time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
 	}
 
-	return fmt.Errorf("failed to send network change notification after migration: %v", lastErr)
+	return lastErr
 }
