@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"sync"
-	"time"
 
 	"github.com/quic-go/quic-go"
 )
@@ -34,7 +33,6 @@ func handleCommunicationAsInitiator(conn *quic.Conn, peerAddr string, role strin
 		}
 	}
 
-	// If receiver or both: accept incoming streams
 	if role == "receiver" || role == "both" {
 		wg.Add(1)
 		go func() {
@@ -44,17 +42,14 @@ func handleCommunicationAsInitiator(conn *quic.Conn, peerAddr string, role strin
 		}()
 	}
 
-	// Wait until all roles (send/receive) complete before closing the connection
 	wg.Wait()
 	conn.CloseWithError(0, "Initiator session completed")
 	log.Printf("Initiator communication completed for role=%s", role)
 }
 
-// Acceptor: behavior depends on role
 func handleCommunicationAsAcceptor(conn *quic.Conn, role string) {
 	log.Printf("Acceptor started with role=%s", role)
 
-	// If receiver or both: accept incoming streams first
 	if role == "receiver" || role == "both" {
 		go func() {
 			log.Printf("Acceptor waiting for incoming audio stream from initiator...")
@@ -62,13 +57,7 @@ func handleCommunicationAsAcceptor(conn *quic.Conn, role string) {
 		}()
 	}
 
-	// If sender or both: open outgoing stream to send
 	if role == "sender" || role == "both" {
-		// Give the accept goroutine a moment if also receiving
-		if role == "both" {
-			time.Sleep(100 * time.Millisecond)
-		}
-
 		audioSendStream, err := conn.OpenStreamSync(context.Background())
 		if err != nil {
 			log.Printf("Failed to open outgoing audio stream as acceptor: %v", err)
@@ -92,7 +81,6 @@ func handleCommunicationAsAcceptor(conn *quic.Conn, role string) {
 	}
 }
 
-// Common function to accept and handle incoming streams
 func acceptStreamsFromPeer(conn *quic.Conn, who string, role string) {
 	streamCount := 0
 	for {
@@ -106,7 +94,6 @@ func acceptStreamsFromPeer(conn *quic.Conn, who string, role string) {
 		log.Printf("%s accepted incoming stream #%d", who, streamCount)
 
 		if streamCount == 1 {
-			// Only receive if role permits
 			if role == "receiver" || role == "both" {
 				go handleIncomingAudioStream(stream, who)
 			} else {

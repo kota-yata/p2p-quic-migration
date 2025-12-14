@@ -100,7 +100,6 @@ func (as *AudioStreamer) StreamAudio() error {
 				return fmt.Errorf("failed to write audio data to stream after %d bytes: %v", totalBytesSent, err)
 			}
 			totalBytesSent += int64(written)
-
 			log.Printf("Streamed %d bytes of audio data", totalBytesSent)
 
 			if totalBytesSent%262144 == 0 {
