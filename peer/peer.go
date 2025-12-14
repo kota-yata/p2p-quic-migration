@@ -374,13 +374,12 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 		} else {
 			log.Printf("Sent server network change notification to intermediate server: %s -> %s (attempt %d)", oldFullAddr, newFullAddr, attempt)
 			successCount++
-			if successCount >= 3 {
+			if successCount >= 2 {
 				return nil
 			}
+			time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
 			continue
 		}
-
-		time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
 	}
 
 	return lastErr
