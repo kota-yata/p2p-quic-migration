@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"strings"
-	"time"
 
 	"github.com/vishvananda/netlink"
 )
@@ -120,7 +119,7 @@ func (nm *NetworkMonitor) monitorLoop() {
 				oldAddr := nm.currentAddress
 				nm.currentAddress = newAddr
 				if nm.onChange != nil {
-					time.Sleep(2 * time.Second) // brief delay to allow network to stabilize
+					// time.Sleep(2 * time.Second)
 					nm.onChange(oldAddr, newAddr)
 				}
 			}

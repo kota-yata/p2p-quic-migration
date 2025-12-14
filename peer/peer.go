@@ -21,15 +21,16 @@ type ServerConfig struct {
 }
 
 type Peer struct {
-	config           *ServerConfig
-	tlsConfig        *tls.Config
-	quicConfig       *quic.Config
-	transport        *quic.Transport
-	udpConn          *net.UDPConn
-	intermediateConn *quic.Conn
-	networkMonitor   *network_monitor.NetworkMonitor
-	knownPeers       map[string]shared.PeerInfo
-	audioRelayStop   func()
+	config             *ServerConfig
+	tlsConfig          *tls.Config
+	quicConfig         *quic.Config
+	transport          *quic.Transport
+	udpConn            *net.UDPConn
+	intermediateConn   *quic.Conn
+	intermediateStream *quic.Stream
+	networkMonitor     *network_monitor.NetworkMonitor
+	knownPeers         map[string]shared.PeerInfo
+	audioRelayStop     func()
 	// hole punch cancellation management
 	hpCancels []context.CancelFunc
 }
@@ -56,14 +57,21 @@ func (p *Peer) Run() error {
 	}
 	defer intermediateConn.CloseWithError(0, "")
 	p.intermediateConn = intermediateConn
-	WaitForObservedAddress(intermediateConn)
 
 	// init peer discovery and handling
 	p.knownPeers = make(map[string]shared.PeerInfo)
-	go ManagePeerDiscovery(intermediateConn, p)
+	stream, err := intermediateConn.OpenStreamSync(context.Background())
+	if err != nil {
+		return fmt.Errorf("failed to open peer discovery stream: %v", err)
+	}
+	defer stream.Close()
+	p.intermediateStream = stream
+	go IntermediateControlReadLoop(intermediateConn, p, stream)
+	// Accept additional streams from the intermediate (e.g., audio relay)
+	go p.acceptIntermediateStreams()
 
 	// monitor established connections and coordinate cancellation/handling
-	go p.monitorConnections()
+	go p.monitorHolepunch()
 
 	return p.runPeerListener()
 }
@@ -81,9 +89,8 @@ func (p *Peer) setupTLS() error {
 	}
 
 	p.quicConfig = &quic.Config{
-		AddressDiscoveryMode: 1,
-		KeepAlivePeriod:      30 * time.Second,
-		MaxIdleTimeout:       5 * time.Minute,
+		KeepAlivePeriod: 30 * time.Second,
+		MaxIdleTimeout:  5 * time.Minute,
 	}
 
 	return nil
@@ -97,7 +104,7 @@ func (p *Peer) setupTransport() error {
 	}
 
 	log.Printf("Binding UDP transport to local address: %s", currentAddr.String())
-	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: currentAddr})
+	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: peerPort, IP: net.IPv4zero})
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP: %v", err)
 	}
@@ -110,11 +117,18 @@ func (p *Peer) setupTransport() error {
 }
 
 func (p *Peer) cleanup() {
+	log.Printf("Cleaning up resources...")
 	if p.transport != nil {
 		p.transport.Close()
 	}
 	if p.udpConn != nil {
 		p.udpConn.Close()
+	}
+	if p.intermediateConn != nil {
+		p.intermediateConn.CloseWithError(0, "")
+	}
+	if p.networkMonitor != nil {
+		p.networkMonitor.Stop()
 	}
 }
 
@@ -130,14 +144,20 @@ func (p *Peer) runPeerListener() error {
 	for {
 		conn, err := ln.Accept(context.Background())
 		if err != nil {
-			log.Printf("Accept error: %v", err)
+			log.Printf("Accept error possibly due to connection migration: %v", err)
+			// try to re-listen on the new transport
+			ln, err = p.transport.Listen(p.tlsConfig, p.quicConfig)
+			if err != nil {
+				return fmt.Errorf("failed to re-listen after accept error: %v", err)
+			}
+			log.Printf("Re-listened on new transport at %s", ln.Addr().String())
 			continue
 		}
 		// notify accept event; monitor will cancel dialers and handle
 		select {
 		case connectionEstablished <- connchan{conn: conn, isAcceptor: true}:
 		default:
-			// if buffer is full, close the new conn to avoid leaks
+			// if buffer is full, close the new conn
 			log.Printf("connectionEstablished channel full; dropping accept notification")
 			conn.CloseWithError(0, "dropped: channel full")
 		}
@@ -260,14 +280,15 @@ func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 
 	if err := p.sendNetworkChangeNotification(oldAddr); err != nil {
 		log.Printf("Failed to send server network change notification after migration: %v", err)
+		return
 	}
 
 	p.StartHolePunchingToAllPeers()
 }
 
-// monitorConnections waits for either acceptor or initiator connection events,
+// monitorHolepunch waits for either acceptor or initiator connection events,
 // cancels outstanding hole punching attempts, and hands off to the proper handler.
-func (p *Peer) monitorConnections() {
+func (p *Peer) monitorHolepunch() {
 	for evt := range connectionEstablished {
 		// cancel any in-flight hole punching attempts
 		for _, c := range p.hpCancels {
@@ -290,7 +311,9 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		return fmt.Errorf("connection is already closed, cannot migrate")
 	}
 
-	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: newAddr, Port: serverPort})
+	// Bind to an ephemeral port on the new address to avoid reusing the
+	// original fixed port, which can confuse NATs after interface changes.
+	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: newAddr, Port: 0})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection: %v", err)
 	}
@@ -335,7 +358,7 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 // Send network change notification through the intermediate server
 func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	if p.intermediateConn.Context().Err() != nil {
-		return fmt.Errorf("connection is closed")
+		return p.intermediateConn.Context().Err()
 	}
 
 	oldFullAddr := oldAddr.String() + ":0"
@@ -343,20 +366,39 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	// The server looks at the source address of the incoming connection, not newAddr in the payload
 	newFullAddr := p.intermediateConn.LocalAddr().String()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	stream, err := p.intermediateConn.OpenStreamSync(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to open stream: %v", err)
-	}
-
+	// Try a few times with short backoff in case the new path isn't
+	// immediately ready for app data after switching.
 	notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldFullAddr, newFullAddr)
-	_, err = stream.Write([]byte(notification))
-	if err != nil {
-		return fmt.Errorf("failed to write notification: %v", err)
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		log.Printf("Attempting to send network change notification (attempt %d)...", attempt)
+		if _, err := p.intermediateStream.Write([]byte(notification)); err != nil {
+			lastErr = fmt.Errorf("write attempt %d failed: %w", attempt, err)
+			_ = p.intermediateStream.Close()
+		} else {
+			log.Printf("Sent server network change notification to intermediate server: %s -> %s (attempt %d)", oldFullAddr, newFullAddr, attempt)
+			return nil
+		}
+
+		time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
 	}
 
-	log.Printf("Sent server network change notification to intermediate server: %s -> %s", oldFullAddr, newFullAddr)
-	return nil
+	return lastErr
+}
+
+// acceptIntermediateStreams accepts additional audio streams initiated by the
+// intermediate server and plays them immediately.
+func (p *Peer) acceptIntermediateStreams() {
+	if p.intermediateConn == nil {
+		return
+	}
+	for {
+		stream, err := p.intermediateConn.AcceptStream(context.Background())
+		if err != nil {
+			log.Printf("Error accepting stream from intermediate: %v", err)
+			return
+		}
+		log.Printf("Accepted incoming relay stream from intermediate server")
+		go handleIncomingAudioStream(stream, "relay")
+	}
 }

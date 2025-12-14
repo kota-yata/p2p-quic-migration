@@ -16,8 +16,7 @@ import (
 )
 
 const (
-	connectionTimeout         = 10 * time.Second
-	observedAddressMaxRetries = 10
+	connectionTimeout = 10 * time.Second
 )
 
 // ConnectToServer dials the intermediate server using the provided transport/configs.
@@ -39,25 +38,8 @@ func ConnectToServer(serverAddr string, tlsConfig *tls.Config, quicConfig *quic.
 	return conn, nil
 }
 
-// WaitForObservedAddress polls the QUIC connection for the observed (server-seen) address.
-func WaitForObservedAddress(conn *quic.Conn) {
-	for i := 0; i < observedAddressMaxRetries; i++ {
-		if observedAddr := conn.GetObservedAddress(); observedAddr != nil {
-			log.Printf("Observed address received: %s", observedAddr.String())
-			break
-		}
-	}
-}
-
-// ManagePeerDiscovery exchanges peer info and handles ongoing notifications.
-func ManagePeerDiscovery(conn *quic.Conn, p *Peer) {
-	stream, err := conn.OpenStreamSync(context.Background())
-	if err != nil {
-		log.Printf("Failed to open communication stream: %v", err)
-		return
-	}
-	defer stream.Close()
-
+// IntermediateControlReadLoop exchanges peer info and handles ongoing notifications.
+func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) {
 	if err := sendPeerRequest(stream); err != nil {
 		log.Printf("Failed to send peer request: %v", err)
 		return
@@ -72,6 +54,8 @@ func ManagePeerDiscovery(conn *quic.Conn, p *Peer) {
 			log.Printf("Failed to read from intermediate server: %v", err)
 			return
 		}
+
+		log.Printf("Received %d bytes from intermediate server", n)
 
 		data := buffer[:n]
 		if isFirst {

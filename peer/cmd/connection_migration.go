@@ -17,9 +17,8 @@ import (
 )
 
 const (
-	serverPort               = 1234
-	connectionTimeout        = 10 * time.Second
-	observedAddressMaxChecks = 10
+	serverPort        = 1234
+	connectionTimeout = 10 * time.Second
 )
 
 type config struct {
@@ -69,16 +68,14 @@ func (a *app) run() error {
 	}
 	defer a.conn.CloseWithError(0, "")
 
-	waitForObservedAddress(a.conn)
-
 	a.monitor = network_monitor.NewNetworkMonitor(a.onAddrChange)
 	if err := a.monitor.Start(); err != nil {
 		return fmt.Errorf("failed to start network monitor: %v", err)
 	}
 	defer a.monitor.Stop()
 
-	log.Println("Connected to intermediate server. Waiting for primary IP changes...")
-	log.Println("Press Ctrl+C to exit.")
+    log.Println("Connected to intermediate server. Waiting for primary IP changes...")
+    log.Println("Press Ctrl+C to exit.")
 
 	// Wait for termination signal
 	sig := make(chan os.Signal, 1)
@@ -99,9 +96,8 @@ func (a *app) setupTLS() error {
 		NextProtos:         []string{"p2p-quic"},
 	}
 	a.quicConfig = &quic.Config{
-		AddressDiscoveryMode: 1,
-		KeepAlivePeriod:      30 * time.Second,
-		MaxIdleTimeout:       5 * time.Minute,
+		KeepAlivePeriod: 30 * time.Second,
+		MaxIdleTimeout:  5 * time.Minute,
 	}
 	return nil
 }
@@ -141,14 +137,7 @@ func (a *app) connectToServer() error {
 	return nil
 }
 
-func waitForObservedAddress(conn *quic.Conn) {
-	for i := 0; i < observedAddressMaxChecks; i++ {
-		if observedAddr := conn.GetObservedAddress(); observedAddr != nil {
-			log.Printf("Observed address: %s", observedAddr.String())
-			break
-		}
-	}
-}
+// (heartbeat functionality removed)
 
 // onAddrChange performs QUIC connection migration to the intermediate server
 // only when the primary IP address has changed.
