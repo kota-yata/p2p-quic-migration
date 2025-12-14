@@ -130,7 +130,13 @@ func (p *Peer) runPeerListener() error {
 	for {
 		conn, err := ln.Accept(context.Background())
 		if err != nil {
-			log.Printf("Accept error: %v", err)
+			log.Printf("Accept error possibly due to connection migration: %v", err)
+			// try to re-listen on the new transport
+			ln, err = p.transport.Listen(p.tlsConfig, p.quicConfig)
+			if err != nil {
+				return fmt.Errorf("failed to re-listen after accept error: %v", err)
+			}
+			log.Printf("Re-listened on new transport at %s", ln.Addr().String())
 			continue
 		}
 		// notify accept event; monitor will cancel dialers and handle
@@ -268,21 +274,21 @@ func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 // monitorHolepunch waits for either acceptor or initiator connection events,
 // cancels outstanding hole punching attempts, and hands off to the proper handler.
 func (p *Peer) monitorHolepunch() {
-    for evt := range connectionEstablished {
-        // cancel any in-flight hole punching attempts
-        for _, c := range p.hpCancels {
-            c()
-        }
-        p.hpCancels = nil
+	for evt := range connectionEstablished {
+		// cancel any in-flight hole punching attempts
+		for _, c := range p.hpCancels {
+			c()
+		}
+		p.hpCancels = nil
 
-        if evt.isAcceptor {
-            p.handleIncomingConnection(evt.conn)
-        } else {
-            // Use remote addr for logging context
-            peerAddr := evt.conn.RemoteAddr().String()
-            handleCommunicationAsInitiator(evt.conn, peerAddr, p.config.role)
-        }
-    }
+		if evt.isAcceptor {
+			p.handleIncomingConnection(evt.conn)
+		} else {
+			// Use remote addr for logging context
+			peerAddr := evt.conn.RemoteAddr().String()
+			handleCommunicationAsInitiator(evt.conn, peerAddr, p.config.role)
+		}
+	}
 }
 
 func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
