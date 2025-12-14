@@ -55,6 +55,8 @@ func IntermediateReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) {
 			return
 		}
 
+		log.Printf("Received %d bytes from intermediate server", n)
+
 		data := buffer[:n]
 		if isFirst {
 			handleInitialPeerList(p, data)
