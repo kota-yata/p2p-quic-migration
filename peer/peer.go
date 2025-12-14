@@ -283,7 +283,7 @@ func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 		return
 	}
 
-	p.StartHolePunchingToAllPeers()
+	// p.StartHolePunchingToAllPeers()
 }
 
 // monitorHolepunch waits for either acceptor or initiator connection events,
