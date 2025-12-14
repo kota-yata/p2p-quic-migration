@@ -398,16 +398,6 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
 
 			registry.AddNotificationStream(peerID, stream)
 			log.Printf("Peer %s registered for notifications on the same stream", peerID)
-
-			select {}
-		case "HEARTBEAT":
-			registry.UpdateLastSeen(peerID)
-			_, err = stream.Write([]byte("HEARTBEAT_ACK"))
-			if err != nil {
-				log.Printf("Failed to write heartbeat response: %v", err)
-				return
-			}
-
 		default:
 			// For any other data, respond with observed address and peer count
 			response := fmt.Sprintf("Observed address: %s, Connected peers: %d",
