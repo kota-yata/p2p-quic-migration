@@ -322,13 +322,6 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		Conn: newUDPConn,
 	}
 
-	// Keep references to old transport/socket (do not close immediately).
-	// Closing the original Transport can cancel the connection's context
-	// even after a successful path switch. We intentionally keep it alive.
-	// These may be cleaned up on process shutdown.
-	// oldTransport := p.transport
-	// oldUDPConn := p.udpConn
-
 	path, err := p.intermediateConn.AddPath(newTransport)
 	if err != nil {
 		newUDPConn.Close()
@@ -359,11 +352,6 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 	p.transport = newTransport
 	p.udpConn = newUDPConn
 
-	// Note: Do NOT close the old transport or UDP socket here. The connection
-	// is still owned by the original transport, and closing it may cancel the
-	// connection's context. We prefer to leak these resources until shutdown
-	// rather than break the migrated connection.
-
 	return nil
 }
 
@@ -389,7 +377,6 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 			_ = p.intermediateStream.Close()
 		} else {
 			log.Printf("Sent server network change notification to intermediate server: %s -> %s (attempt %d)", oldFullAddr, newFullAddr, attempt)
-			// _ = p.intermediateStream.Close()
 			return nil
 		}
 
@@ -399,8 +386,8 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	return lastErr
 }
 
-// acceptIntermediateStreams accepts additional streams initiated by the
-// intermediate server (e.g., audio relay) and plays them immediately.
+// acceptIntermediateStreams accepts additional audio streams initiated by the
+// intermediate server and plays them immediately.
 func (p *Peer) acceptIntermediateStreams() {
 	if p.intermediateConn == nil {
 		return
