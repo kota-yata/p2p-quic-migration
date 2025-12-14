@@ -364,6 +364,7 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	// immediately ready for app data after switching.
 	notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldFullAddr, newFullAddr)
 	var lastErr error
+	time.Sleep(1000 * time.Millisecond) // brief wait before first attempt
 	for attempt := 1; attempt <= 3; attempt++ {
 		log.Printf("Attempting to send network change notification (attempt %d)...", attempt)
 		if _, err := p.intermediateStream.Write([]byte(notification)); err != nil {
