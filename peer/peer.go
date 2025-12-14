@@ -98,13 +98,7 @@ func (p *Peer) setupTLS() error {
 
 func (p *Peer) setupTransport() error {
 	var err error
-	currentAddr, err := p.networkMonitor.GetCurrentAddress()
-	if err != nil {
-		return fmt.Errorf("failed to get current network address: %v", err)
-	}
-
-	log.Printf("Binding UDP transport to local address: %s", currentAddr.String())
-	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: peerPort, IP: currentAddr})
+	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: peerPort, IP: net.IPv4zero})
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP: %v", err)
 	}
