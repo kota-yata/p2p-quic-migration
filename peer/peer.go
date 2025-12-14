@@ -87,9 +87,8 @@ func (p *Peer) setupTLS() error {
 	}
 
 	p.quicConfig = &quic.Config{
-		AddressDiscoveryMode: 1,
-		KeepAlivePeriod:      30 * time.Second,
-		MaxIdleTimeout:       5 * time.Minute,
+		KeepAlivePeriod: 30 * time.Second,
+		MaxIdleTimeout:  5 * time.Minute,
 	}
 
 	return nil
