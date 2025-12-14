@@ -308,9 +308,12 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		Conn: newUDPConn,
 	}
 
-	// Keep references to old transport/socket so we can close them after a successful switch
-	oldTransport := p.transport
-	oldUDPConn := p.udpConn
+    // Keep references to old transport/socket (do not close immediately).
+    // Closing the original Transport can cancel the connection's context
+    // even after a successful path switch. We intentionally keep it alive.
+    // These may be cleaned up on process shutdown.
+    // oldTransport := p.transport
+    // oldUDPConn := p.udpConn
 
 	path, err := p.intermediateConn.AddPath(newTransport)
 	if err != nil {
@@ -342,13 +345,10 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 	p.transport = newTransport
 	p.udpConn = newUDPConn
 
-	// Close the old transport/socket after switching to avoid dual bindings
-	if oldTransport != nil {
-		oldTransport.Close()
-	}
-	if oldUDPConn != nil {
-		oldUDPConn.Close()
-	}
+    // Note: Do NOT close the old transport or UDP socket here. The connection
+    // is still owned by the original transport, and closing it may cancel the
+    // connection's context. We prefer to leak these resources until shutdown
+    // rather than break the migrated connection.
 
 	return nil
 }
@@ -370,10 +370,10 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
 		log.Printf("Attempting to send network change notification (attempt %d)...", attempt)
-		perAttemptTimeout := 1 * time.Second
-		ctx, cancel := context.WithTimeout(context.Background(), perAttemptTimeout)
-		stream, err := p.intermediateConn.OpenStreamSync(ctx)
-		defer cancel()
+        perAttemptTimeout := 1 * time.Second
+        ctx, cancel := context.WithTimeout(context.Background(), perAttemptTimeout)
+        stream, err := p.intermediateConn.OpenStreamSync(ctx)
+        cancel()
 		if err != nil {
 			lastErr = fmt.Errorf("open stream attempt %d failed: %w", attempt, err)
 		} else {
