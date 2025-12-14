@@ -365,18 +365,12 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldFullAddr, newFullAddr)
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		stream, err := p.intermediateConn.OpenStreamSync(context.Background())
-		if err != nil {
-			lastErr = fmt.Errorf("failed to open stream for notification: %w", err)
-			continue
-		}
 		log.Printf("Attempting to send network change notification (attempt %d)...", attempt)
-		if _, err := stream.Write([]byte(notification)); err != nil {
+		if _, err := p.intermediateStream.Write([]byte(notification)); err != nil {
 			lastErr = fmt.Errorf("write attempt %d failed: %w", attempt, err)
-			_ = stream.Close()
+			_ = p.intermediateStream.Close()
 		} else {
 			log.Printf("Sent server network change notification to intermediate server: %s -> %s (attempt %d)", oldFullAddr, newFullAddr, attempt)
-			_ = stream.Close()
 			return nil
 		}
 
