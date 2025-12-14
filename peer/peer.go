@@ -368,6 +368,7 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	notification := fmt.Sprintf("NETWORK_CHANGE|%s|%s", oldFullAddr, newFullAddr)
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
+		log.Printf("Attempting to send network change notification (attempt %d)...", attempt)
 		perAttemptTimeout := 1 * time.Second
 		ctx, cancel := context.WithTimeout(context.Background(), perAttemptTimeout)
 		stream, err := p.intermediateConn.OpenStreamSync(ctx)
