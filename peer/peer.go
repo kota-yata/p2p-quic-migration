@@ -66,7 +66,9 @@ func (p *Peer) Run() error {
 	}
 	defer stream.Close()
 	p.intermediateStream = stream
-	go IntermediateReadLoop(intermediateConn, p, stream)
+	go IntermediateControlReadLoop(intermediateConn, p, stream)
+	// Accept additional streams from the intermediate (e.g., audio relay)
+	go p.acceptIntermediateStreams()
 
 	// monitor established connections and coordinate cancellation/handling
 	go p.monitorHolepunch()
@@ -395,4 +397,21 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	}
 
 	return lastErr
+}
+
+// acceptIntermediateStreams accepts additional streams initiated by the
+// intermediate server (e.g., audio relay) and plays them immediately.
+func (p *Peer) acceptIntermediateStreams() {
+	if p.intermediateConn == nil {
+		return
+	}
+	for {
+		stream, err := p.intermediateConn.AcceptStream(context.Background())
+		if err != nil {
+			log.Printf("Error accepting stream from intermediate: %v", err)
+			return
+		}
+		log.Printf("Accepted incoming relay stream from intermediate server")
+		go handleIncomingAudioStream(stream, "relay")
+	}
 }

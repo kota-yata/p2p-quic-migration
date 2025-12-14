@@ -38,8 +38,8 @@ func ConnectToServer(serverAddr string, tlsConfig *tls.Config, quicConfig *quic.
 	return conn, nil
 }
 
-// IntermediateReadLoop exchanges peer info and handles ongoing notifications.
-func IntermediateReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) {
+// IntermediateControlReadLoop exchanges peer info and handles ongoing notifications.
+func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) {
 	if err := sendPeerRequest(stream); err != nil {
 		log.Printf("Failed to send peer request: %v", err)
 		return
