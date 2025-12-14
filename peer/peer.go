@@ -60,10 +60,10 @@ func (p *Peer) Run() error {
 
 	// init peer discovery and handling
 	p.knownPeers = make(map[string]shared.PeerInfo)
-	go ManagePeerDiscovery(intermediateConn, p)
+	go IntermediateReadLoop(intermediateConn, p)
 
 	// monitor established connections and coordinate cancellation/handling
-	go p.monitorConnections()
+	go p.monitorHolepunch()
 
 	return p.runPeerListener()
 }
@@ -97,7 +97,7 @@ func (p *Peer) setupTransport() error {
 	}
 
 	log.Printf("Binding UDP transport to local address: %s", currentAddr.String())
-	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: peerPort, IP: currentAddr})
+	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: peerPort, IP: net.IPv4zero})
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP: %v", err)
 	}
@@ -137,7 +137,7 @@ func (p *Peer) runPeerListener() error {
 		select {
 		case connectionEstablished <- connchan{conn: conn, isAcceptor: true}:
 		default:
-			// if buffer is full, close the new conn to avoid leaks
+			// if buffer is full, close the new conn
 			log.Printf("connectionEstablished channel full; dropping accept notification")
 			conn.CloseWithError(0, "dropped: channel full")
 		}
@@ -265,9 +265,9 @@ func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 	p.StartHolePunchingToAllPeers()
 }
 
-// monitorConnections waits for either acceptor or initiator connection events,
+// monitorHolepunch waits for either acceptor or initiator connection events,
 // cancels outstanding hole punching attempts, and hands off to the proper handler.
-func (p *Peer) monitorConnections() {
+func (p *Peer) monitorHolepunch() {
 	for first := range connectionEstablished {
 		// cancel any in-flight hole punching attempts
 		for _, c := range p.hpCancels {
@@ -311,6 +311,7 @@ func (p *Peer) monitorConnections() {
 // the other side keeps the acceptor connection. This converges to a single
 // shared connection across both peers.
 // TODO: Decide acceptor and initiator from the intermediate server before starting hole punching
+// then this function is not needed.
 func pickDeterministicConnection(a, b connchan) (chosen connchan, other connchan) {
 	// Prefer to have both roles if available
 	// Compute ordering using the addresses of the first connection; both
@@ -423,7 +424,7 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 		perAttemptTimeout := 1 * time.Second
 		ctx, cancel := context.WithTimeout(context.Background(), perAttemptTimeout)
 		stream, err := p.intermediateConn.OpenStreamSync(ctx)
-		cancel()
+		defer cancel()
 		if err != nil {
 			lastErr = fmt.Errorf("open stream attempt %d failed: %w", attempt, err)
 		} else {

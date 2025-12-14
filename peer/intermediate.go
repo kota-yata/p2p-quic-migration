@@ -49,8 +49,8 @@ func WaitForObservedAddress(conn *quic.Conn) {
 	}
 }
 
-// ManagePeerDiscovery exchanges peer info and handles ongoing notifications.
-func ManagePeerDiscovery(conn *quic.Conn, p *Peer) {
+// IntermediateReadLoop exchanges peer info and handles ongoing notifications.
+func IntermediateReadLoop(conn *quic.Conn, p *Peer) {
 	stream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
 		log.Printf("Failed to open communication stream: %v", err)
@@ -69,8 +69,8 @@ func ManagePeerDiscovery(conn *quic.Conn, p *Peer) {
 	for {
 		n, err := stream.Read(buffer)
 		if err != nil {
-			// log.Printf("Failed to read from intermediate server: %v", err)
-			continue
+			log.Printf("Failed to read from intermediate server: %v", err)
+			return
 		}
 
 		data := buffer[:n]
