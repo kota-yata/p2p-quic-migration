@@ -57,7 +57,6 @@ func (p *Peer) Run() error {
 	}
 	defer intermediateConn.CloseWithError(0, "")
 	p.intermediateConn = intermediateConn
-	// WaitForObservedAddress(intermediateConn)
 
 	// init peer discovery and handling
 	p.knownPeers = make(map[string]shared.PeerInfo)

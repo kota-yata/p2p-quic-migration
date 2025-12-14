@@ -16,8 +16,7 @@ import (
 )
 
 const (
-	connectionTimeout         = 10 * time.Second
-	observedAddressMaxRetries = 10
+	connectionTimeout = 10 * time.Second
 )
 
 // ConnectToServer dials the intermediate server using the provided transport/configs.
@@ -37,16 +36,6 @@ func ConnectToServer(serverAddr string, tlsConfig *tls.Config, quicConfig *quic.
 
 	log.Printf("Connected to intermediate server at %s", serverAddr)
 	return conn, nil
-}
-
-// WaitForObservedAddress polls the QUIC connection for the observed (server-seen) address.
-func WaitForObservedAddress(conn *quic.Conn) {
-	for i := 0; i < observedAddressMaxRetries; i++ {
-		if observedAddr := conn.GetObservedAddress(); observedAddr != nil {
-			log.Printf("Observed address received: %s", observedAddr.String())
-			break
-		}
-	}
 }
 
 // IntermediateReadLoop exchanges peer info and handles ongoing notifications.

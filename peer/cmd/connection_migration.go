@@ -17,9 +17,8 @@ import (
 )
 
 const (
-	serverPort               = 1234
-	connectionTimeout        = 10 * time.Second
-	observedAddressMaxChecks = 10
+	serverPort        = 1234
+	connectionTimeout = 10 * time.Second
 )
 
 type config struct {
@@ -69,8 +68,6 @@ func (a *app) run() error {
 	}
 	defer a.conn.CloseWithError(0, "")
 
-	waitForObservedAddress(a.conn)
-
 	a.monitor = network_monitor.NewNetworkMonitor(a.onAddrChange)
 	if err := a.monitor.Start(); err != nil {
 		return fmt.Errorf("failed to start network monitor: %v", err)
@@ -103,9 +100,8 @@ func (a *app) setupTLS() error {
 		NextProtos:         []string{"p2p-quic"},
 	}
 	a.quicConfig = &quic.Config{
-		AddressDiscoveryMode: 1,
-		KeepAlivePeriod:      30 * time.Second,
-		MaxIdleTimeout:       5 * time.Minute,
+		KeepAlivePeriod: 30 * time.Second,
+		MaxIdleTimeout:  5 * time.Minute,
 	}
 	return nil
 }
@@ -143,15 +139,6 @@ func (a *app) connectToServer() error {
 	a.conn = conn
 	log.Printf("Connected to intermediate server at %s", a.cfg.serverAddr)
 	return nil
-}
-
-func waitForObservedAddress(conn *quic.Conn) {
-	for i := 0; i < observedAddressMaxChecks; i++ {
-		if observedAddr := conn.GetObservedAddress(); observedAddr != nil {
-			log.Printf("Observed address: %s", observedAddr.String())
-			break
-		}
-	}
 }
 
 // startHeartbeat opens a stream and periodically writes a small text
