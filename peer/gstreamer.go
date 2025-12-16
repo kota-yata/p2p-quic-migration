@@ -121,12 +121,14 @@ func (as *AudioStreamer) StreamAudio() error {
 }
 
 type AudioReceiver struct {
-	stream *quic.Stream
+	stream   *quic.Stream
+	recorder *AudioRecorder
 }
 
-func NewAudioReceiver(stream *quic.Stream) *AudioReceiver {
+func NewAudioReceiver(stream *quic.Stream, recorder *AudioRecorder) *AudioReceiver {
 	return &AudioReceiver{
-		stream: stream,
+		stream:   stream,
+		recorder: recorder,
 	}
 }
 
@@ -184,6 +186,10 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 		}
 
 		if n > 0 {
+			if err := ar.writeToRecorder(buffer[:n]); err != nil {
+				log.Printf("Failed to write incoming audio to recorder: %v", err)
+			}
+
 			written, err := stdin.Write(buffer[:n])
 			if err != nil {
 				return fmt.Errorf("failed to write to gstreamer: %v", err)
@@ -204,4 +210,11 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 
 	log.Printf("Audio playback completed successfully. Total bytes received: %d", totalBytes)
 	return nil
+}
+
+func (ar *AudioReceiver) writeToRecorder(data []byte) error {
+	if ar.recorder == nil {
+		return nil
+	}
+	return ar.recorder.Write(data)
 }

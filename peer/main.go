@@ -36,6 +36,8 @@ func parseFlags() *ServerConfig {
 	cert := flag.String("cert", "server.crt", "TLS certificate (requires -key option)")
 	serverAddr := flag.String("serverAddr", "203.178.143.72:12345", "Address to intermediary server")
 	role := flag.String("role", "both", "Peer role: sender, receiver, or both")
+	record := flag.Bool("record", false, "Record incoming audio to a file")
+	recordPath := flag.String("rpath", "recordings/received_audio.raw", "Path to store incoming audio when --record is set")
 	flag.Parse()
 
 	cfg := &ServerConfig{
@@ -43,6 +45,8 @@ func parseFlags() *ServerConfig {
 		certFile:   *cert,
 		serverAddr: *serverAddr,
 		role:       *role,
+		record:     *record,
+		recordPath: *recordPath,
 	}
 
 	if *role != "sender" && *role != "receiver" && *role != "both" {

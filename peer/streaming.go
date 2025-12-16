@@ -9,10 +9,12 @@ import (
 )
 
 // Initiator: behavior depends on role
-func handleCommunicationAsInitiator(conn *quic.Conn, peerAddr string, role string) {
+func handleCommunicationAsInitiator(conn *quic.Conn, peerAddr string, role string, recorder *AudioRecorder) {
 	log.Printf("Initiator started with role=%s, peer=%s", role, peerAddr)
 
 	var wg sync.WaitGroup
+
+	shouldReceive := role == "receiver" || role == "both" || recorder != nil
 
 	// If sender or both: open outgoing stream and send audio
 	if role == "sender" || role == "both" {
@@ -33,12 +35,12 @@ func handleCommunicationAsInitiator(conn *quic.Conn, peerAddr string, role strin
 		}
 	}
 
-	if role == "receiver" || role == "both" {
+	if shouldReceive {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			log.Printf("Initiator waiting to receive incoming audio stream from peer...")
-			acceptStreamsFromPeer(conn, "initiator", role)
+			acceptStreamsFromPeer(conn, "initiator", role, recorder)
 		}()
 	}
 
@@ -47,13 +49,15 @@ func handleCommunicationAsInitiator(conn *quic.Conn, peerAddr string, role strin
 	log.Printf("Initiator communication completed for role=%s", role)
 }
 
-func handleCommunicationAsAcceptor(conn *quic.Conn, role string) {
+func handleCommunicationAsAcceptor(conn *quic.Conn, role string, recorder *AudioRecorder) {
 	log.Printf("Acceptor started with role=%s", role)
 
-	if role == "receiver" || role == "both" {
+	shouldReceive := role == "receiver" || role == "both" || recorder != nil
+
+	if shouldReceive {
 		go func() {
 			log.Printf("Acceptor waiting for incoming audio stream from initiator...")
-			acceptStreamsFromPeer(conn, "acceptor", role)
+			acceptStreamsFromPeer(conn, "acceptor", role, recorder)
 		}()
 	}
 
@@ -81,7 +85,8 @@ func handleCommunicationAsAcceptor(conn *quic.Conn, role string) {
 	}
 }
 
-func acceptStreamsFromPeer(conn *quic.Conn, who string, role string) {
+func acceptStreamsFromPeer(conn *quic.Conn, who string, role string, recorder *AudioRecorder) {
+	shouldReceive := role == "receiver" || role == "both" || recorder != nil
 	streamCount := 0
 	for {
 		stream, err := conn.AcceptStream(context.Background())
@@ -94,8 +99,8 @@ func acceptStreamsFromPeer(conn *quic.Conn, who string, role string) {
 		log.Printf("%s accepted incoming stream #%d", who, streamCount)
 
 		if streamCount == 1 {
-			if role == "receiver" || role == "both" {
-				go handleIncomingAudioStream(stream, who)
+			if shouldReceive {
+				go handleIncomingAudioStream(stream, who, recorder)
 			} else {
 				log.Printf("%s is sender-only; closing unexpected inbound stream #%d", who, streamCount)
 				stream.Close()
@@ -107,11 +112,11 @@ func acceptStreamsFromPeer(conn *quic.Conn, who string, role string) {
 	}
 }
 
-func handleIncomingAudioStream(stream *quic.Stream, role string) {
+func handleIncomingAudioStream(stream *quic.Stream, role string, recorder *AudioRecorder) {
 	defer stream.Close()
 	log.Printf("%s starting to receive and play incoming audio stream", role)
 
-	audioReceiver := NewAudioReceiver(stream)
+	audioReceiver := NewAudioReceiver(stream, recorder)
 	if err := audioReceiver.ReceiveAudio(); err != nil {
 		log.Printf("%s audio receiving failed: %v", role, err)
 	} else {
