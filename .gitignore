@@ -10,3 +10,5 @@ peer/peer
 intermediate/intermediate
 
 **/.venv
+
+**/*.raw
