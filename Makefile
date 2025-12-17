@@ -4,7 +4,8 @@ CERT_FILE ?= server.crt
 KEY_FILE ?= server.key
 ROLE ?= both
 RECORD ?= false
-RECORD_PATH ?= /tmp/p2prec*.raw
+# Unix time is evaluated at make parse time
+RECORD_PATH ?= /tmp/p2prec$(shell date +%s).mp3
 
 ifeq ($(RECORD),true)
 RECORD_FLAGS := --record --rpath="$(RECORD_PATH)"
@@ -22,6 +23,9 @@ ps: deps cert
 
 pr: deps cert
 	$(MAKE) peer ROLE=receiver
+
+prrec: deps cert
+	$(MAKE) peer ROLE=receiver RECORD=true RECORD_PATH="$(RECORD_PATH)"
 
 address-detection:
 	cd peer/cmd && go run network_monitor_standalone.go
