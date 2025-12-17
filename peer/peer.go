@@ -33,7 +33,6 @@ type Peer struct {
 	networkMonitor     *network_monitor.NetworkMonitor
 	knownPeers         map[string]shared.PeerInfo
 	audioRelayStop     func()
-	recorder           *AudioRecorder
 	// hole punch cancellation management
 	hpCancels []context.CancelFunc
 }
@@ -44,17 +43,7 @@ func (p *Peer) Run() error {
 	}
 
 	if p.config.record {
-		recorder, err := NewAudioRecorder(p.config.recordPath)
-		if err != nil {
-			return fmt.Errorf("failed to set up audio recorder: %v", err)
-		}
-		p.recorder = recorder
-		log.Printf("Recording incoming audio to %s", recorder.Path())
-		defer func() {
-			if err := recorder.Close(); err != nil {
-				log.Printf("Error closing recorder: %v", err)
-			}
-		}()
+		log.Printf("Recording incoming audio to %s", p.config.recordPath)
 	}
 
 	p.networkMonitor = network_monitor.NewNetworkMonitor(p.onAddrChange)
@@ -190,7 +179,11 @@ func (p *Peer) handleIncomingConnection(conn *quic.Conn) {
 
 	// Since we received the connection, we act as the "acceptor"
 	log.Printf("Acting as connection acceptor with role=%s", p.config.role)
-	handleCommunicationAsAcceptor(conn, p.config.role, p.recorder)
+	recPath := ""
+	if p.config.record {
+		recPath = p.config.recordPath
+	}
+	handleCommunicationAsAcceptor(conn, p.config.role, recPath)
 }
 
 func (p *Peer) handleInitialPeers(peers []shared.PeerInfo) {
@@ -319,7 +312,11 @@ func (p *Peer) monitorHolepunch() {
 		} else {
 			// Use remote addr for logging context
 			peerAddr := evt.conn.RemoteAddr().String()
-			handleCommunicationAsInitiator(evt.conn, peerAddr, p.config.role, p.recorder)
+			recPath := ""
+			if p.config.record {
+				recPath = p.config.recordPath
+			}
+			handleCommunicationAsInitiator(evt.conn, peerAddr, p.config.role, recPath)
 		}
 	}
 }
@@ -417,6 +414,10 @@ func (p *Peer) acceptIntermediateStreams() {
 			return
 		}
 		log.Printf("Accepted incoming relay stream from intermediate server")
-		go handleIncomingAudioStream(stream, "relay", p.recorder)
+		recPath := ""
+		if p.config.record {
+			recPath = p.config.recordPath
+		}
+		go handleIncomingAudioStream(stream, "relay", recPath)
 	}
 }

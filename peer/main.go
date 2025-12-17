@@ -2,7 +2,9 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
@@ -37,7 +39,7 @@ func parseFlags() *ServerConfig {
 	serverAddr := flag.String("serverAddr", "203.178.143.72:12345", "Address to intermediary server")
 	role := flag.String("role", "both", "Peer role: sender, receiver, or both")
 	record := flag.Bool("record", false, "Record incoming audio to a file")
-	recordPath := flag.String("rpath", "recordings/received_audio.raw", "Path to store incoming audio when --record is set")
+	recordPath := flag.String("rpath", "", "Path to store incoming audio when --record is set (default: /tmp/p2prec<unix>.mp3)")
 	flag.Parse()
 
 	cfg := &ServerConfig{
@@ -51,6 +53,11 @@ func parseFlags() *ServerConfig {
 
 	if *role != "sender" && *role != "receiver" && *role != "both" {
 		log.Fatalf("Invalid role specified: %s. Must be 'sender', 'receiver', or 'both'.", *role)
+	}
+
+	// If recording is enabled but no path provided, default to /tmp/p2prec<unix>.mp3
+	if cfg.record && cfg.recordPath == "" {
+		cfg.recordPath = fmt.Sprintf("/tmp/p2prec%d.mp3", time.Now().Unix())
 	}
 
 	return cfg

@@ -120,27 +120,45 @@ func (as *AudioStreamer) StreamAudio() error {
 }
 
 type AudioReceiver struct {
-	stream   *quic.Stream
-	recorder *AudioRecorder
+	stream     *quic.Stream
+	recordPath string
 }
 
-func NewAudioReceiver(stream *quic.Stream, recorder *AudioRecorder) *AudioReceiver {
+func NewAudioReceiver(stream *quic.Stream, recordPath string) *AudioReceiver {
 	return &AudioReceiver{
-		stream:   stream,
-		recorder: recorder,
+		stream:     stream,
+		recordPath: recordPath,
 	}
 }
 
 func (ar *AudioReceiver) ReceiveAudio() error {
 	log.Printf("Starting real-time audio playback from stream")
 
-	cmd := exec.Command("gst-launch-1.0",
+	args := []string{
 		"fdsrc", "fd=0", "!",
 		"rawaudioparse", "use-sink-caps=false", "sample-rate=44100", "num-channels=2", "format=pcm", "pcm-format=s16le", "!",
-		"audioconvert", "!",
-		"audioresample", "!",
-		"queue", "max-size-time=50000000", "leaky=downstream", "!",
-		"autoaudiosink", "sync=false")
+	}
+
+	if ar.recordPath != "" {
+		args = append(args,
+			"tee", "name=t", "!",
+			"queue", "!", "audioconvert", "!", "audioresample", "!",
+			"queue", "max-size-time=50000000", "leaky=downstream", "!",
+			"autoaudiosink", "sync=false",
+			"t.", "!", "queue", "!", "audioconvert", "!",
+			"lamemp3enc", "quality=2", "!", "id3v2mux", "!",
+			"filesink", "location="+ar.recordPath, "sync=true",
+		)
+	} else {
+		args = append(args,
+			"audioconvert", "!",
+			"audioresample", "!",
+			"queue", "max-size-time=50000000", "leaky=downstream", "!",
+			"autoaudiosink", "sync=false",
+		)
+	}
+
+	cmd := exec.Command("gst-launch-1.0", args...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -185,10 +203,6 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 		}
 
 		if n > 0 {
-			if err := ar.writeToRecorder(buffer[:n]); err != nil {
-				log.Printf("Failed to write incoming audio to recorder: %v", err)
-			}
-
 			written, err := stdin.Write(buffer[:n])
 			if err != nil {
 				return fmt.Errorf("failed to write to gstreamer: %v", err)
@@ -209,11 +223,4 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 
 	log.Printf("Audio playback completed successfully. Total bytes received: %d", totalBytes)
 	return nil
-}
-
-func (ar *AudioReceiver) writeToRecorder(data []byte) error {
-	if ar.recorder == nil {
-		return nil
-	}
-	return ar.recorder.Write(data)
 }
