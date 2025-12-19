@@ -5,28 +5,18 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sync"
 )
 
 type MP3Frame struct {
 	// version (1), protection (1), bitrate index(4), sample rate index(2),
 	// version=0 indicates MPEG2, version=1 indicates MPEG1
-	flag1      byte
-	flag1Mutex sync.Mutex
+	flag1 byte
 	// unused(5), padding (1), channel mode (2)
-	flag2      byte
-	flag2Mutex sync.Mutex
+	flag2 byte
 	// CRC16 value read from the frame (if present)
-	crcValue      [2]byte
-	crcValueMutex sync.Mutex
+	crcValue [2]byte
 	// CRC16 target bytes that is used to calculate and compare with crcValue
-	crcTarget      []byte
-	crcTargetMutex sync.Mutex
-
-	headerRead   bool
-	headerMutex  sync.Mutex
-	payloadRead  bool
-	payloadMutex sync.Mutex
+	crcTarget []byte
 }
 
 func OpenMP3File(path string) (io.ReadCloser, error) {
@@ -37,7 +27,7 @@ func OpenMP3File(path string) (io.ReadCloser, error) {
 	return os.Open(path)
 }
 
-func (h *MP3Frame) ReadHeader(reader *bufio.Reader) error {
+func ReadHeader(h *MP3Frame, reader *bufio.Reader) error {
 	var b byte
 	var err error
 	for {
@@ -72,58 +62,42 @@ func (h *MP3Frame) ReadHeader(reader *bufio.Reader) error {
 		}
 		protectionBit := b & 0x01
 		hasCRC := protectionBit == 0
-		h.flag1Mutex.Lock()
 		h.flag1 |= protectionBit << 6 // set protection bit
-		h.flag1Mutex.Unlock()
 
 		b, err = reader.ReadByte()
 		if err != nil {
 			return err
 		}
 		if hasCRC {
-			h.crcTargetMutex.Lock()
 			h.crcTarget = make([]byte, 2)
 			h.crcTarget[0] = b
-			h.crcTargetMutex.Unlock()
 		}
 
 		bitrateIndex := (b >> 4) & 0x0F
 		if bitrateIndex == 0x0F {
 			return fmt.Errorf("invalid bitrate index: bad")
 		}
-		h.flag1Mutex.Lock()
 		h.flag1 |= bitrateIndex << 2 // set bitrate index
-		h.flag1Mutex.Unlock()
 
 		sampleRateIndex := (b >> 2) & 0x03
 		if sampleRateIndex == 0x03 {
 			return fmt.Errorf("invalid sample rate index: reserved")
 		}
-		h.flag1Mutex.Lock()
 		h.flag1 |= sampleRateIndex // set sample rate index
-		h.flag1Mutex.Unlock()
 
-		h.flag2Mutex.Lock()
 		h.flag2 |= ((b >> 1) & 0x01) << 1 // set padding bit
-		h.flag2Mutex.Unlock()
 
 		b, err = reader.ReadByte()
 		if err != nil {
 			return err
 		}
 		if hasCRC {
-			h.crcTargetMutex.Lock()
 			h.crcTarget[1] = b
-			h.crcTargetMutex.Unlock()
 		}
-		h.flag2Mutex.Lock()
 		h.flag2 |= (b >> 6) & 0x03 // set channel mode
-		h.flag2Mutex.Unlock()
 
 		if hasCRC {
-			h.crcValueMutex.Lock()
 			_, err := io.ReadFull(reader, h.crcValue[:])
-			h.crcValueMutex.Unlock()
 			if err != nil {
 				return err
 			}
@@ -133,47 +107,39 @@ func (h *MP3Frame) ReadHeader(reader *bufio.Reader) error {
 	}
 }
 
-func (h *MP3Frame) ReadPayload(reader *bufio.Reader, frameLength int) ([]byte, error) {
-
-}
+// TODO: read payload
 
 // Layer III frame length = (144 * Bitrate / SampleRate) + Padding
-func (h *MP3Frame) GetFrameLength() (int, error) {
-	bitrateKbps, isFree := h.GetBitrateKbps()
+func GetFrameLength(h *MP3Frame) (int, error) {
+	bitrateKbps, isFree := GetBitrateKbps(h)
 	if isFree {
 		return 0, fmt.Errorf("free bitrate frames are not supported")
 	}
-	sampleRate := h.GetSampleRate()
-	padding := h.GetPadding()
+	sampleRate := GetSampleRate(h)
+	padding := GetPadding(h)
 
 	frameLength := (144 * int(bitrateKbps*1000) / int(sampleRate)) + int(padding)
 	return frameLength, nil
 }
 
-func (h *MP3Frame) ValidateCRC(reader *bufio.Reader) bool {
-	if !h.hasCRC() {
+func ValidateCRC(h *MP3Frame, reader *bufio.Reader) bool {
+	if !hasCRC(h) {
 		return true // no CRC to validate
 	}
 	return true // TODO: implement CRC16 validation
 }
 
-func (h *MP3Frame) hasCRC() bool {
-	h.flag1Mutex.Lock()
-	defer h.flag1Mutex.Unlock()
+func hasCRC(h *MP3Frame) bool {
 	return (h.flag1 & (1 << 6)) == 0
 }
 
 // IsStereo does not distinguish between joint stereo and dual channel modes
-func (h *MP3Frame) isStereo() bool {
-	h.flag2Mutex.Lock()
-	defer h.flag2Mutex.Unlock()
+func isStereo(h *MP3Frame) bool {
 	return (h.flag2 & 0x03) != 0x03
 }
 
 // GetBitrate returns the bitrate in bps. If the frame uses free bitrate, returns (0, true)
-func (h *MP3Frame) GetBitrateKbps() (uint16, bool) {
-	h.flag1Mutex.Lock()
-	defer h.flag1Mutex.Unlock()
+func GetBitrateKbps(h *MP3Frame) (uint16, bool) {
 	bitrateIndex := (h.flag1 >> 2) & 0x0F
 	if bitrateIndex == 0 {
 		return 0, true // free bitrate
@@ -186,9 +152,7 @@ func (h *MP3Frame) GetBitrateKbps() (uint16, bool) {
 	}
 }
 
-func (h *MP3Frame) GetSampleRate() uint16 {
-	h.flag1Mutex.Lock()
-	defer h.flag1Mutex.Unlock()
+func GetSampleRate(h *MP3Frame) uint16 {
 	sampleRateIndex := h.flag1 & 0x03
 	version := (h.flag1 >> 7) & 0x01
 	if version == 1 {
@@ -198,8 +162,6 @@ func (h *MP3Frame) GetSampleRate() uint16 {
 	}
 }
 
-func (h *MP3Frame) GetPadding() uint8 {
-	h.flag2Mutex.Lock()
-	defer h.flag2Mutex.Unlock()
+func GetPadding(h *MP3Frame) uint8 {
 	return (h.flag2 >> 1) & 0x01
 }
