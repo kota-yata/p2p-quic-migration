@@ -5,32 +5,23 @@ import (
 	"fmt"
 	"io"
 	"os"
-)
-
-var (
-	V1L3_BITRATE_TABLE = [15]uint16{
-		0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
-	}
-	V2L3_BITRATE_TABLE = [15]uint16{
-		0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160,
-	}
-	V1_SAMPLE_RATE_TABLE = [3]uint16{
-		44100, 48000, 32000,
-	}
-	V2_SAMPLE_RATE_TABLE = [3]uint16{
-		22050, 24000, 16000,
-	}
+	"sync"
 )
 
 type MP3Frame struct {
+	mutex sync.Mutex
 	// version (1), protection (1), bitrate index(4), sample rate index(2),
 	// version=0 indicates MPEG2, version=1 indicates MPEG1
 	flag1 byte
 	// unused(5), padding (1), channel mode (2)
 	flag2 byte
+	// CRC16 value read from the frame (if present)
+	crcValue [4]byte
+	// CRC16 target bytes that is used to calculate and compare with crcValue
+	crcTarget []byte
 }
 
-func openMP3File(path string) (io.ReadCloser, error) {
+func OpenMP3File(path string) (io.ReadCloser, error) {
 	ext := ".mp3"
 	if len(path) < len(ext) || path[len(path)-len(ext):] != ext {
 		return nil, fmt.Errorf("unsupported file format: %s", path)
@@ -38,7 +29,9 @@ func openMP3File(path string) (io.ReadCloser, error) {
 	return os.Open(path)
 }
 
-func (h *MP3Frame) readHeader(reader *bufio.Reader) error {
+func (h *MP3Frame) ReadHeader(reader *bufio.Reader) error {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
 	var b byte
 	var err error
 	for {
@@ -55,7 +48,7 @@ func (h *MP3Frame) readHeader(reader *bufio.Reader) error {
 		if err != nil {
 			return err
 		}
-		// syncword is 11 bits, check the last 3 bits to confirm
+		// sync bit is 11 bits, check the last 3 bits to confirm
 		if b&0xE0 != 0xE0 {
 			continue
 		}
@@ -64,18 +57,24 @@ func (h *MP3Frame) readHeader(reader *bufio.Reader) error {
 		case 0x10: // MPEG Version 2.0
 		case 0x11: // MPEG Version 1.0
 			h.flag1 |= 1 << 7 // set msb to indicate MPEG1
-		default:
+		default: // no support for MPEG Version 2.5 at this time
 			return fmt.Errorf("unsupported MPEG version %02x", (b>>3)&0x03)
 		}
-		// at this point we only support Layer III (MP3)
+		// at this time we only support Layer III
 		if (b >> 1 & 0x03) != 0x01 {
 			return fmt.Errorf("unsupported layer, only Layer III (MP3) is supported")
 		}
-		h.flag1 |= (b & 0x01) << 6 // set protection bit
+		protectionBit := b & 0x01
+		hasCRC := protectionBit == 0
+		h.flag1 |= protectionBit << 6 // set protection bit
 
 		b, err = reader.ReadByte()
 		if err != nil {
 			return err
+		}
+		if hasCRC {
+			h.crcTarget = make([]byte, 2)
+			h.crcTarget[0] = b
 		}
 
 		bitrateIndex := (b >> 4) & 0x0F
@@ -96,21 +95,47 @@ func (h *MP3Frame) readHeader(reader *bufio.Reader) error {
 		if err != nil {
 			return err
 		}
+		if hasCRC {
+			h.crcTarget[1] = b
+		}
 		h.flag2 |= (b >> 6) & 0x03 // set channel mode
+
+		if hasCRC {
+			_, err := io.ReadFull(reader, h.crcValue[:])
+			if err != nil {
+				return err
+			}
+		}
 
 		return nil
 	}
 }
 
-// TODO: check CRC
+func (h *MP3Frame) ValidateCRC(reader *bufio.Reader) bool {
+	if !h.hasCRC() {
+		return true // no CRC to validate
+	}
+	return true // TODO: implement CRC16 validation
+}
+
+func (h *MP3Frame) hasCRC() bool {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
+	return (h.flag1 & (1 << 6)) == 0
+}
+
 // TODO: calculate frame length
 
 // IsStereo does not distinguish between joint stereo and dual channel modes
-func (h *MP3Frame) IsStereo() bool {
+func (h *MP3Frame) isStereo() bool {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
 	return (h.flag2 & 0x03) != 0x03
 }
 
 func (h *MP3Frame) GetBitrateKbps() (uint16, bool) {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
 	bitrateIndex := (h.flag1 >> 2) & 0x0F
 	if bitrateIndex == 0 {
 		return 0, true // free bitrate
@@ -124,6 +149,8 @@ func (h *MP3Frame) GetBitrateKbps() (uint16, bool) {
 }
 
 func (h *MP3Frame) GetSampleRate() uint16 {
+	h.mutex.Lock()
+	defer h.mutex.Unlock()
 	sampleRateIndex := h.flag1 & 0x03
 	version := (h.flag1 >> 7) & 0x01
 	if version == 1 {
