@@ -1,5 +1,5 @@
-//go:build darwin || freebsd || netbsd || openbsd
-// +build darwin freebsd netbsd openbsd
+//go:build darwin
+// +build darwin
 
 package network_monitor
 
