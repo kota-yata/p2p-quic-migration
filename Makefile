@@ -3,17 +3,29 @@ INTERMEDIATE_ADDR ?= 203.178.143.72:12345
 CERT_FILE ?= server.crt
 KEY_FILE ?= server.key
 ROLE ?= both
+RECORD ?= false
+# Unix time is evaluated at make parse time
+RECORD_PATH ?= /tmp/p2prec$(shell date +%s).mp3
+
+ifeq ($(RECORD),true)
+RECORD_FLAGS := --record --rpath="$(RECORD_PATH)"
+else
+RECORD_FLAGS :=
+endif
 
 .PHONY: peer ps pr intermediate unified-peer unified-server unified-client unified-bidirectional clean deps cert
 
 peer: deps cert
-	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -serverAddr "$(INTERMEDIATE_ADDR)" -role "$(ROLE)"
+	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -serverAddr "$(INTERMEDIATE_ADDR)" -role "$(ROLE)" $(RECORD_FLAGS)
 
 ps: deps cert
 	$(MAKE) peer ROLE=sender
 
 pr: deps cert
 	$(MAKE) peer ROLE=receiver
+
+prrec: deps cert
+	$(MAKE) peer ROLE=receiver RECORD=true RECORD_PATH="$(RECORD_PATH)"
 
 address-detection:
 	cd peer/cmd && go run network_monitor_standalone.go

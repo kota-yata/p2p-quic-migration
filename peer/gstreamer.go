@@ -100,7 +100,6 @@ func (as *AudioStreamer) StreamAudio() error {
 				return fmt.Errorf("failed to write audio data to stream after %d bytes: %v", totalBytesSent, err)
 			}
 			totalBytesSent += int64(written)
-			log.Printf("Streamed %d bytes of audio data", totalBytesSent)
 
 			if totalBytesSent%262144 == 0 {
 				log.Printf("Sent %.1f MB of audio data", float64(totalBytesSent)/1048576)
@@ -121,25 +120,45 @@ func (as *AudioStreamer) StreamAudio() error {
 }
 
 type AudioReceiver struct {
-	stream *quic.Stream
+	stream     *quic.Stream
+	recordPath string
 }
 
-func NewAudioReceiver(stream *quic.Stream) *AudioReceiver {
+func NewAudioReceiver(stream *quic.Stream, recordPath string) *AudioReceiver {
 	return &AudioReceiver{
-		stream: stream,
+		stream:     stream,
+		recordPath: recordPath,
 	}
 }
 
 func (ar *AudioReceiver) ReceiveAudio() error {
 	log.Printf("Starting real-time audio playback from stream")
 
-	cmd := exec.Command("gst-launch-1.0",
+	args := []string{
 		"fdsrc", "fd=0", "!",
 		"rawaudioparse", "use-sink-caps=false", "sample-rate=44100", "num-channels=2", "format=pcm", "pcm-format=s16le", "!",
-		"audioconvert", "!",
-		"audioresample", "!",
-		"queue", "max-size-time=50000000", "leaky=downstream", "!",
-		"autoaudiosink", "sync=false")
+	}
+
+	if ar.recordPath != "" {
+		args = append(args,
+			"tee", "name=t", "!",
+			"queue", "!", "audioconvert", "!", "audioresample", "!",
+			"queue", "max-size-time=50000000", "leaky=downstream", "!",
+			"autoaudiosink", "sync=false",
+			"t.", "!", "queue", "!", "audioconvert", "!",
+			"lamemp3enc", "quality=2", "!", "id3v2mux", "!",
+			"filesink", "location="+ar.recordPath, "sync=true",
+		)
+	} else {
+		args = append(args,
+			"audioconvert", "!",
+			"audioresample", "!",
+			"queue", "max-size-time=50000000", "leaky=downstream", "!",
+			"autoaudiosink", "sync=false",
+		)
+	}
+
+	cmd := exec.Command("gst-launch-1.0", args...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
