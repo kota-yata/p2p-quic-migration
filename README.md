@@ -52,3 +52,4 @@ make pr INTERMEDIATE_ADDR=<host:port>
 
 - `sender` opens an outgoing audio stream to the peer but does not play incoming audio.
 - `receiver` accepts and plays incoming audio but does not open outgoing audio streams.
+- Simply run `make peer` runs peer as both sender and receiver, but I haven't been running peer with "both" mode for a long time so not sure if it still works
