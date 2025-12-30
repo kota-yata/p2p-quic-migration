@@ -12,3 +12,7 @@ intermediate/intermediate
 **/.venv
 
 **/*.raw
+
+pcap/*
+log/*
+
