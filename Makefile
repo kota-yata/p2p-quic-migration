@@ -34,9 +34,28 @@ pr: deps cert
 prrec: deps cert
 	$(MAKE) peer ROLE=receiver RECORD=true RECORD_PATH="$(RECORD_PATH)"
 
+monitor:
+	@echo "Starting monitoring... (Wi-Fi Log & Dual-Interface tcpdump)"
+	@(logcat -v time | grep --line-buffered -E "setWifiEnabled" > $(LOG_FILE) & echo $$! > .logcat.pid)
+	@(tcpdump -i $(IF_WIFI) -w $(PCAP_WIFI) 2>/dev/null & echo $$! > .tcpdump_wifi.pid)
+	@(tcpdump -i $(IF_CELL) -w $(PCAP_CELL) 2>/dev/null & echo $$! > .tcpdump_cell.pid)
+	@# waiting for user input
+	@read _
+	@$(MAKE) stop-monitor
+
+stop-monitor:
+	@echo "Stopping processes..."
+	@for pid_file in .logcat.pid .tcpdump_wifi.pid .tcpdump_cell.pid; do \
+		if [ -f $$pid_file ]; then \
+			kill `cat $$pid_file` 2>/dev/null || true; \
+			rm $$pid_file; \
+		fi; \
+	done
+	@echo "Done."
+
 exp: deps cert # for experiment
 	@echo "Starting logcat, tcpdump, and prrec..."
-	@# 終了時にバックグラウンドプロセスを確実に殺すためのトラップ
+	@# trap
 	@trap 'kill $(shell pgrep -f "tcpdump|logcat") 2>/dev/null || true' EXIT; \
 	(logcat -v time | grep --line-buffered -E "setWifiEnabled" > $(LOG_FILE) &); \
 	(tcpdump -i $(IF_WIFI) -w $(PCAP_WIFI) &); \
