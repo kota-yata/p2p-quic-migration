@@ -50,7 +50,6 @@ func (p *Peer) Run() error {
 	if err := p.networkMonitor.Start(); err != nil {
 		return fmt.Errorf("failed to start network monitor: %v", err)
 	}
-	defer p.networkMonitor.Stop()
 
 	if err := p.setupTransport(); err != nil {
 		return fmt.Errorf("failed to setup transport: %v", err)
