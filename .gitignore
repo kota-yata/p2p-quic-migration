@@ -13,8 +13,5 @@ intermediate/intermediate
 
 **/*.raw
 
-pcap/*
-log/*
-
 *.pid
 
