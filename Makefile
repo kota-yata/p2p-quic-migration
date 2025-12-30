@@ -34,11 +34,11 @@ pr: deps cert
 prrec: deps cert
 	$(MAKE) peer ROLE=receiver RECORD=true RECORD_PATH="$(RECORD_PATH)"
 
-monitor: # 2>/dev/null squashes stdout. If you want to see errors, remove it.
+monitor:
 	@echo "Starting monitoring... (Wi-Fi Log & Dual-Interface tcpdump)"
 	@(logcat -v time | grep --line-buffered -E "setWifiEnabled" > $(LOG_FILE) & echo $$! > .logcat.pid)
-	@(tcpdump -i $(IF_WIFI) -w $(PCAP_WIFI) 2>/dev/null & echo $$! > .tcpdump_wifi.pid)
-	@(tcpdump -i $(IF_CELL) -w $(PCAP_CELL) 2>/dev/null & echo $$! > .tcpdump_cell.pid)
+	@(tcpdump -i $(IF_WIFI) -w $(PCAP_WIFI) & echo $$! > .tcpdump_wifi.pid)
+	@(tcpdump -i $(IF_CELL) -w $(PCAP_CELL) & echo $$! > .tcpdump_cell.pid)
 	@# waiting for user input
 	@read _
 	@$(MAKE) stop-monitor
