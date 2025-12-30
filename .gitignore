@@ -1,7 +1,7 @@
 .DS_Store
 **/*.crt
 **/*.key
-**/*.log
+# **/*.log
 bin/
 # **/*.mp4
 # **/*.mp3

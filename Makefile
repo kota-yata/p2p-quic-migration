@@ -53,7 +53,7 @@ stop-monitor:
 	done
 	@echo "Done."
 
-exp: deps cert
+exp: deps cert # storing pids just in case of unexpected termination
 	@echo "Starting monitoring..."
 	@mkdir -p ./record ./pcap ./log
 	@trap 'echo "Cleaning up..."; kill $$PID1 $$PID2 $$PID3 2>/dev/null; rm -f .*.pid' EXIT; \
