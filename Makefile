@@ -5,7 +5,7 @@ KEY_FILE ?= server.key
 ROLE ?= both
 RECORD ?= false
 # Unix time is evaluated at make parse time
-RECORD_PATH ?= ./p2prec$(shell date +%s).mp3
+RECORD_PATH ?= ../record/p2prec$(shell date +%s).mp3
 
 PCAP_WIFI ?= ./pcap/wifi_$(shell date +%s).pcap
 PCAP_CELL ?= ./pcap/cell_$(shell date +%s).pcap
@@ -34,7 +34,7 @@ pr: deps cert
 prrec: deps cert
 	$(MAKE) peer ROLE=receiver RECORD=true RECORD_PATH="$(RECORD_PATH)"
 
-monitor:
+monitor: # 2>/dev/null squashes stdout. If you want to see errors, remove it.
 	@echo "Starting monitoring... (Wi-Fi Log & Dual-Interface tcpdump)"
 	@(logcat -v time | grep --line-buffered -E "setWifiEnabled" > $(LOG_FILE) & echo $$! > .logcat.pid)
 	@(tcpdump -i $(IF_WIFI) -w $(PCAP_WIFI) 2>/dev/null & echo $$! > .tcpdump_wifi.pid)
@@ -53,13 +53,15 @@ stop-monitor:
 	done
 	@echo "Done."
 
-exp: deps cert # for experiment
-	@echo "Starting logcat, tcpdump, and prrec..."
-	@# trap
-	@trap 'kill $(shell pgrep -f "tcpdump|logcat") 2>/dev/null || true' EXIT; \
-	(logcat -v time | grep --line-buffered -E "setWifiEnabled" > $(LOG_FILE) &); \
-	(tcpdump -i $(IF_WIFI) -w $(PCAP_WIFI) &); \
-	(tcpdump -i $(IF_CELL) -w $(PCAP_CELL) &); \
+exp: deps cert
+	@echo "Starting monitoring..."
+	@mkdir -p ./record ./pcap ./log
+	@trap 'echo "Cleaning up..."; kill $$PID1 $$PID2 $$PID3 2>/dev/null; rm -f .*.pid' EXIT; \
+	logcat -v time | grep --line-buffered -E "setWifiEnabled" > $(LOG_FILE) & PID1=$$!; echo $$PID1 > .logcat.pid; \
+	echo "Starting tcpdump on interfaces $(IF_WIFI) and $(IF_CELL)..."; \
+	tcpdump -i $(IF_WIFI) -w $(PCAP_WIFI) 2>/dev/null & PID2=$$!; echo $$PID2 > .tcpdump_wifi.pid; \
+	tcpdump -i $(IF_CELL) -w $(PCAP_CELL) 2>/dev/null & PID3=$$!; echo $$PID3 > .tcpdump_cell.pid; \
+	echo "Processes started. Running prrec..."; \
 	$(MAKE) prrec RECORD_PATH="$(RECORD_PATH)"
 
 address-detection:
