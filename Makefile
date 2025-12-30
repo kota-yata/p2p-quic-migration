@@ -36,6 +36,7 @@ prrec: deps cert
 
 monitor:
 	@echo "Starting monitoring... (Wi-Fi Log & Dual-Interface tcpdump)"
+	@mkdir -p ./record ./pcap ./log
 	@(logcat -v time | grep --line-buffered -E "setWifiEnabled" > $(LOG_FILE) & echo $$! > .logcat.pid)
 	@(tcpdump -i $(IF_WIFI) -w $(PCAP_WIFI) & echo $$! > .tcpdump_wifi.pid)
 	@(tcpdump -i $(IF_CELL) -w $(PCAP_CELL) & echo $$! > .tcpdump_cell.pid)
