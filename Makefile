@@ -68,7 +68,7 @@ exp: deps cert # storing pids just in case of unexpected termination
 	tcpdump -i $(IF_WIFI) -w $(PCAP_WIFI) 2>/dev/null & PID2=$$!; echo $$PID2 > .tcpdump_wifi.pid; \
 	tcpdump -i $(IF_CELL) -w $(PCAP_CELL) 2>/dev/null & PID3=$$!; echo $$PID3 > .tcpdump_cell.pid; \
 	echo "Processes started. Running prrec..."; \
-	$(MAKE) prrec RECORD_PATH="$(RECORD_PATH)"
+	$(MAKE) pr
 
 address-detection:
 	cd peer/cmd && go run network_monitor_standalone.go
