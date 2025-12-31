@@ -1,0 +1,5 @@
+12-31 18:21:58.088 D/SystemUI( 2579): Tile.WifiTile-->setWifiEnabled: true
+12-31 18:21:58.091 I/WifiService( 1559): setWifiEnabled package=com.android.systemui uid=10184 enable=false isPrivileged=true
+12-31 18:22:12.952 I/WifiService( 1559): setWifiEnabled package=com.android.systemui uid=10184 enable=true isPrivileged=true
+12-31 18:22:58.065 D/SystemUI( 2579): Tile.WifiTile-->setWifiEnabled: true
+12-31 18:22:58.066 I/WifiService( 1559): setWifiEnabled package=com.android.systemui uid=10184 enable=false isPrivileged=true
