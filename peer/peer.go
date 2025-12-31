@@ -18,8 +18,6 @@ type ServerConfig struct {
 	certFile   string
 	serverAddr string
 	role       string
-	record     bool
-	recordPath string
 }
 
 type Peer struct {
@@ -40,10 +38,6 @@ type Peer struct {
 func (p *Peer) Run() error {
 	if err := p.setupTLS(); err != nil {
 		return fmt.Errorf("failed to setup TLS: %v", err)
-	}
-
-	if p.config.record {
-		log.Printf("Recording incoming audio to %s", p.config.recordPath)
 	}
 
 	p.networkMonitor = network_monitor.NewNetworkMonitor(p.onAddrChange)
@@ -178,11 +172,7 @@ func (p *Peer) handleIncomingConnection(conn *quic.Conn) {
 
 	// Since we received the connection, we act as the "acceptor"
 	log.Printf("Acting as connection acceptor with role=%s", p.config.role)
-	recPath := ""
-	if p.config.record {
-		recPath = p.config.recordPath
-	}
-	handleCommunicationAsAcceptor(conn, p.config.role, recPath)
+	handleCommunicationAsAcceptor(conn, p.config.role)
 }
 
 func (p *Peer) handleInitialPeers(peers []shared.PeerInfo) {
@@ -311,11 +301,7 @@ func (p *Peer) monitorHolepunch() {
 		} else {
 			// Use remote addr for logging context
 			peerAddr := evt.conn.RemoteAddr().String()
-			recPath := ""
-			if p.config.record {
-				recPath = p.config.recordPath
-			}
-			handleCommunicationAsInitiator(evt.conn, peerAddr, p.config.role, recPath)
+			handleCommunicationAsInitiator(evt.conn, peerAddr, p.config.role)
 		}
 	}
 }
@@ -413,10 +399,6 @@ func (p *Peer) acceptIntermediateStreams() {
 			return
 		}
 		log.Printf("Accepted incoming relay stream from intermediate server")
-		recPath := ""
-		if p.config.record {
-			recPath = p.config.recordPath
-		}
-		go handleIncomingAudioStream(stream, "relay", recPath)
+		go handleIncomingAudioStream(stream, "relay")
 	}
 }

@@ -3,9 +3,6 @@ INTERMEDIATE_ADDR ?= 162.43.38.7:12345
 CERT_FILE ?= server.crt
 KEY_FILE ?= server.key
 ROLE ?= both
-RECORD ?= false
-# Unix time is evaluated at make parse time
-RECORD_PATH ?= ../record/p2prec$(shell date +%s).mp3
 
 PCAP_WIFI ?= ./pcap/wifi_$(shell date +%s).pcap
 PCAP_CELL ?= ./pcap/cell_$(shell date +%s).pcap
@@ -14,16 +11,12 @@ LOG_FILE  ?= ./log/wifi_event_$(shell date +%s).log
 IF_WIFI ?= wlan0
 IF_CELL ?= rmnet_data3
 
-ifeq ($(RECORD),true)
-RECORD_FLAGS := --record --rpath="$(RECORD_PATH)"
-else
 RECORD_FLAGS :=
-endif
 
-.PHONY: peer ps pr prrec exp intermediate clean deps cert
+.PHONY: peer ps pr exp intermediate clean deps cert
 
 peer: deps cert
-	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -serverAddr "$(INTERMEDIATE_ADDR)" -role "$(ROLE)" $(RECORD_FLAGS)
+	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -serverAddr "$(INTERMEDIATE_ADDR)" -role "$(ROLE)"
 
 ps: deps cert
 	$(MAKE) peer ROLE=sender
@@ -31,12 +24,11 @@ ps: deps cert
 pr: deps cert
 	$(MAKE) peer ROLE=receiver
 
-prrec: deps cert
-	$(MAKE) peer ROLE=receiver RECORD=true RECORD_PATH="$(RECORD_PATH)"
+## removed prrec target (recording deprecated)
 
 monitor:
 	@echo "Starting monitoring... (Wi-Fi Log & Dual-Interface tcpdump)"
-	@mkdir -p ./record ./pcap ./log
+	@mkdir -p ./pcap ./log
 	@(logcat -v time | grep --line-buffered -E "setWifiEnabled" > $(LOG_FILE) & echo $$! > .logcat.pid)
 	@(tcpdump -i $(IF_WIFI) -w $(PCAP_WIFI) & echo $$! > .tcpdump_wifi.pid)
 	@(tcpdump -i $(IF_CELL) -w $(PCAP_CELL) & echo $$! > .tcpdump_cell.pid)
@@ -61,13 +53,13 @@ clearm:
 
 exp: deps cert # storing pids just in case of unexpected termination
 	@echo "Starting monitoring..."
-	@mkdir -p ./record ./pcap ./log
+	@mkdir -p ./pcap ./log
 	@trap 'echo "Cleaning up..."; kill $$PID1 $$PID2 $$PID3 2>/dev/null; rm -f .*.pid' EXIT; \
 	logcat -v time | grep --line-buffered -E "setWifiEnabled" > $(LOG_FILE) & PID1=$$!; echo $$PID1 > .logcat.pid; \
 	echo "Starting tcpdump on interfaces $(IF_WIFI) and $(IF_CELL)..."; \
 	tcpdump -i $(IF_WIFI) -w $(PCAP_WIFI) 2>/dev/null & PID2=$$!; echo $$PID2 > .tcpdump_wifi.pid; \
 	tcpdump -i $(IF_CELL) -w $(PCAP_CELL) 2>/dev/null & PID3=$$!; echo $$PID3 > .tcpdump_cell.pid; \
-	echo "Processes started. Running prrec..."; \
+	echo "Processes started. Running pr..."; \
 	$(MAKE) pr
 
 address-detection:

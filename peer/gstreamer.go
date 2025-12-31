@@ -120,14 +120,12 @@ func (as *AudioStreamer) StreamAudio() error {
 }
 
 type AudioReceiver struct {
-	stream     *quic.Stream
-	recordPath string
+	stream *quic.Stream
 }
 
-func NewAudioReceiver(stream *quic.Stream, recordPath string) *AudioReceiver {
+func NewAudioReceiver(stream *quic.Stream) *AudioReceiver {
 	return &AudioReceiver{
-		stream:     stream,
-		recordPath: recordPath,
+		stream: stream,
 	}
 }
 
@@ -137,25 +135,10 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 	args := []string{
 		"fdsrc", "fd=0", "!",
 		"rawaudioparse", "use-sink-caps=false", "sample-rate=44100", "num-channels=2", "format=pcm", "pcm-format=s16le", "!",
-	}
-
-	if ar.recordPath != "" {
-		args = append(args,
-			"tee", "name=t", "!",
-			"queue", "!", "audioconvert", "!", "audioresample", "!",
-			"autoaudiosink", "sync=false",
-			"t.", "!", "queue", "!",
-			"audioconvert", "!",
-			"lamemp3enc", "target=bitrate", "bitrate=128", "!",
-			"filesink", "location="+ar.recordPath,
-		)
-	} else {
-		args = append(args,
-			"audioconvert", "!",
-			"audioresample", "!",
-			"queue", "max-size-time=50000000", "leaky=downstream", "!",
-			"autoaudiosink", "sync=false",
-		)
+		"audioconvert", "!",
+		"audioresample", "!",
+		"queue", "max-size-time=50000000", "leaky=downstream", "!",
+		"autoaudiosink", "sync=false",
 	}
 
 	cmd := exec.Command("gst-launch-1.0", args...)
