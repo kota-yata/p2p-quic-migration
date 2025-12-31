@@ -12,7 +12,7 @@ PCAP_CELL ?= ./pcap/cell_$(shell date +%s).pcap
 LOG_FILE  ?= ./log/wifi_event_$(shell date +%s).log
 
 IF_WIFI ?= wlan0
-IF_CELL ?= rmnet_data2
+IF_CELL ?= rmnet_data3
 
 ifeq ($(RECORD),true)
 RECORD_FLAGS := --record --rpath="$(RECORD_PATH)"
