@@ -54,6 +54,11 @@ stop-monitor:
 	done
 	@echo "Done."
 
+clearm:
+	@echo "Removing pcap and log files..."
+	@rm -f ./pcap/*.pcap ./log/*.log
+	@echo "Done."
+
 exp: deps cert # storing pids just in case of unexpected termination
 	@echo "Starting monitoring..."
 	@mkdir -p ./record ./pcap ./log
