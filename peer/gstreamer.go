@@ -143,11 +143,11 @@ func (ar *AudioReceiver) ReceiveAudio() error {
 		args = append(args,
 			"tee", "name=t", "!",
 			"queue", "!", "audioconvert", "!", "audioresample", "!",
-			"queue", "max-size-time=50000000", "leaky=downstream", "!",
 			"autoaudiosink", "sync=false",
-			"t.", "!", "queue", "!", "audioconvert", "!",
-			"lamemp3enc", "quality=2", "!", "id3v2mux", "!",
-			"filesink", "location="+ar.recordPath, "sync=true",
+			"t.", "!", "queue", "!",
+			"audioconvert", "!",
+			"lamemp3enc", "target=bitrate", "bitrate=128", "!",
+			"filesink", "location="+ar.recordPath,
 		)
 	} else {
 		args = append(args,
