@@ -1,24 +1,8 @@
 p2p-quic-migration is a project to seek the smallest interruption time when a peer's IP address has changed during p2p connection.
 
 # Development
-This project uses a [modified version of quic-go](https://github.com/kota-yata/quic-go). Place this repository and `quic-go` in the same directory hierarchy and it will work (if not, let me know).
-
 ## Prerequisites
-
-### GStreamer Installation
-This project requires GStreamer for audio streaming. Install it and its plugins.
-
-**Note for macOS:** If you see GLib warnings like "Failed to load shared library 'libgobject-2.0.0.dylib'", install additional dependencies and set variables:
-```bash
-brew install glib gobject-introspection
-export DYLD_LIBRARY_PATH="/opt/homebrew/opt/glib/lib:$DYLD_LIBRARY_PATH"
-export GI_TYPELIB_PATH="/opt/homebrew/lib/girepository-1.0:$GI_TYPELIB_PATH"
-```
-
-**Verify Installation:**
-```bash
-gst-launch-1.0 --version # or just gstreamer --version
-```
+Gstreamer with the "good" plugin is required.
 
 ## Running programs 
 ```bash
