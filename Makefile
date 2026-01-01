@@ -4,14 +4,15 @@ CERT_FILE ?= server.crt
 KEY_FILE ?= server.key
 ROLE ?= both
 
-PCAP_WIFI ?= ./pcap/wifi_$(shell date +%s).pcap
-PCAP_CELL ?= ./pcap/cell_$(shell date +%s).pcap
+PCAP_RCV_WIFI ?= ./pcap/rcv_wifi_$(shell date +%s).pcap
+PCAP_RCV_CELL ?= ./pcap/rcv_cell_$(shell date +%s).pcap
+PCAP_SND_WIFI ?= ./pcap/snd_wifi_$(shell date +%s).pcap
+PCAP_SND_CELL ?= ./pcap/snd_cell_$(shell date +%s).pcap
 LOG_FILE  ?= ./log/wifi_event_$(shell date +%s).log
 
-IF_WIFI ?= wlan0
-IF_CELL ?= rmnet_data3
-
-RECORD_FLAGS :=
+RCV_IF_WIFI ?= wlan0
+RCV_IF_CELL ?= rmnet_data3
+SND_IF_WIFI ?= eth0
 
 .PHONY: peer ps pr exp intermediate clean deps cert
 
@@ -30,8 +31,8 @@ monitor:
 	@echo "Starting monitoring... (Wi-Fi Log & Dual-Interface tcpdump)"
 	@mkdir -p ./pcap ./log
 	@(logcat -v time | grep --line-buffered -E "setWifiEnabled" > $(LOG_FILE) & echo $$! > .logcat.pid)
-	@(tcpdump -i $(IF_WIFI) -w $(PCAP_WIFI) & echo $$! > .tcpdump_wifi.pid)
-	@(tcpdump -i $(IF_CELL) -w $(PCAP_CELL) & echo $$! > .tcpdump_cell.pid)
+	@(tcpdump -i $(RCV_IF_WIFI) -w $(PCAP_RCV_WIFI) & echo $$! > .tcpdump_wifi.pid)
+	@(tcpdump -i $(RCV_IF_CELL) -w $(PCAP_RCV_CELL) & echo $$! > .tcpdump_cell.pid)
 	@# waiting for user input
 	@read _
 	@$(MAKE) stop-monitor
@@ -51,16 +52,25 @@ clearm:
 	@rm -f ./pcap/*.pcap ./log/*.log
 	@echo "Done."
 
-exp: deps cert # storing pids just in case of unexpected termination
+exp-pr: deps cert # storing pids just in case of unexpected termination
 	@echo "Starting monitoring..."
 	@mkdir -p ./pcap ./log
 	@trap 'echo "Cleaning up..."; kill $$PID1 $$PID2 $$PID3 2>/dev/null; rm -f .*.pid' EXIT; \
 	logcat -v time | grep --line-buffered -E "setWifiEnabled" > $(LOG_FILE) & PID1=$$!; echo $$PID1 > .logcat.pid; \
-	echo "Starting tcpdump on interfaces $(IF_WIFI) and $(IF_CELL)..."; \
-	tcpdump -i $(IF_WIFI) -w $(PCAP_WIFI) 2>/dev/null & PID2=$$!; echo $$PID2 > .tcpdump_wifi.pid; \
-	tcpdump -i $(IF_CELL) -w $(PCAP_CELL) 2>/dev/null & PID3=$$!; echo $$PID3 > .tcpdump_cell.pid; \
+	echo "Starting tcpdump on interfaces $(RCV_IF_WIFI) and $(RCV_IF_CELL)..."; \
+	tcpdump -i $(RCV_IF_WIFI) -w $(PCAP_RCV_WIFI) 2>/dev/null & PID2=$$!; echo $$PID2 > .tcpdump_wifi.pid; \
+	tcpdump -i $(RCV_IF_CELL) -w $(PCAP_RCV_CELL) 2>/dev/null & PID3=$$!; echo $$PID3 > .tcpdump_cell.pid; \
 	echo "Processes started. Running pr..."; \
 	$(MAKE) pr
+
+exp-ps: deps cert # storing pids just in case of unexpected termination
+	@echo "Starting monitoring..."
+	@mkdir -p ./pcap ./log
+	@trap 'echo "Cleaning up..."; kill $$PID1 $$PID2 $$PID3 2>/dev/null; rm -f .*.pid' EXIT; \
+	echo "Starting tcpdump on interfaces $(SND_IF_WIFI)..."; \
+	tcpdump -i $(SND_IF_WIFI) -w $(PCAP_SND_WIFI) 2>/dev/null & PID2=$$!; echo $$PID2 > .tcpdump_wifi.pid; \
+	echo "Processes started. Running ps..."; \
+	$(MAKE) ps
 
 address-detection:
 	cd peer/cmd && go run network_monitor_standalone.go
