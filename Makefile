@@ -6,13 +6,12 @@ ROLE ?= both
 
 PCAP_RCV_WIFI ?= ./pcap/rcv_wifi_$(shell date +%s).pcap
 PCAP_RCV_CELL ?= ./pcap/rcv_cell_$(shell date +%s).pcap
-PCAP_SND_WIFI ?= ./pcap/snd_wifi_$(shell date +%s).pcap
-PCAP_SND_CELL ?= ./pcap/snd_cell_$(shell date +%s).pcap
+PCAP_SND_WIFI ?= ./pcap/snd_$(shell date +%s).pcap
 LOG_FILE  ?= ./log/wifi_event_$(shell date +%s).log
 
 RCV_IF_WIFI ?= wlan0
-RCV_IF_CELL ?= rmnet_data3
-SND_IF_WIFI ?= eth0
+RCV_IF_CELL ?= rmnet_data2
+SND_IF_WIFI ?= en0
 
 .PHONY: peer ps pr exp intermediate clean deps cert
 
