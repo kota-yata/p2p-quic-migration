@@ -11,7 +11,7 @@ LOG_FILE  ?= ./log/wifi_event_$(shell date +%s).log
 
 RCV_IF_WIFI ?= wlan0
 RCV_IF_CELL ?= rmnet_data2
-SND_IF_WIFI ?= en0
+SND_IF_WIFI ?= eth0
 
 .PHONY: peer ps pr exp intermediate clean deps cert
 
@@ -67,7 +67,7 @@ exp-ps: deps cert # storing pids just in case of unexpected termination
 	@mkdir -p ./pcap ./log
 	@trap 'echo "Cleaning up..."; kill $$PID1 $$PID2 $$PID3 2>/dev/null; rm -f .*.pid' EXIT; \
 	echo "Starting tcpdump on interfaces $(SND_IF_WIFI)..."; \
-	tcpdump -i $(SND_IF_WIFI) -w $(PCAP_SND_WIFI) 2>/dev/null & PID2=$$!; echo $$PID2 > .tcpdump_wifi.pid; \
+	tcpdump -i $(SND_IF_WIFI) -w $(PCAP_SND_WIFI) & PID2=$$!; echo $$PID2 > .tcpdump_wifi.pid; \
 	echo "Processes started. Running ps..."; \
 	$(MAKE) ps
 
