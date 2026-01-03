@@ -65,7 +65,7 @@ exp-pr: deps cert # storing pids just in case of unexpected termination
 exp-ps: deps cert # storing pids just in case of unexpected termination
 	@echo "Starting monitoring..."
 	@mkdir -p ./pcap ./log
-	@trap 'echo "Cleaning up..."; kill $$PID1 $$PID2 $$PID3 2>/dev/null; rm -f .*.pid' EXIT; \
+	@trap 'echo "Cleaning up..."; kill $$PID2 2>/dev/null; rm -f .*.pid' EXIT; \
 	echo "Starting tcpdump on interfaces $(SND_IF_WIFI)..."; \
 	tcpdump -i $(SND_IF_WIFI) -w $(PCAP_SND_WIFI) & PID2=$$!; echo $$PID2 > .tcpdump_wifi.pid; \
 	echo "Processes started. Running ps..."; \
