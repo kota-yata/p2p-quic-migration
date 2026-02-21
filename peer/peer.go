@@ -420,7 +420,7 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 	// Bind to an ephemeral port on the new address to avoid reusing the
 	// original fixed port, which can confuse NATs after interface changes.
 	// Force IPv4 UDP to avoid AF mismatch issues during migration
-	newUDPConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: newAddr, Port: 1357})
+	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: newAddr, Port: 1357})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection: %v", err)
 	}
@@ -470,7 +470,7 @@ func (p *Peer) migrateRelayConnection(newAddr net.IP) error {
 		return fmt.Errorf("relay connection is closed, cannot migrate")
 	}
 	// Create a dedicated UDP socket and transport for the relay path
-	newUDPConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: newAddr, Port: 1452})
+	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: newAddr, Port: 1452})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection for relay: %v", err)
 	}
@@ -516,21 +516,11 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 		addr.IP = oldAddr.To16()
 		addr.Port = 0
 	}
-	var lastErr error
-	for attempt := 1; attempt <= 3; attempt++ {
-		log.Printf("Attempting to send network change notification (attempt %d)...", attempt)
-		if err := proto.WriteMessage(p.intermediateStream, proto.NetworkChangeReq{OldAddress: addr}); err != nil {
-			lastErr = fmt.Errorf("write attempt %d failed: %w", attempt, err)
-			_ = p.intermediateStream.Close()
-		} else {
-			log.Printf("Sent server network change notification to intermediate server (attempt %d)", attempt)
-			return nil
-		}
-
-		time.Sleep(time.Duration(attempt) * 300 * time.Millisecond)
+	if err := proto.WriteMessage(p.intermediateStream, proto.NetworkChangeReq{OldAddress: addr}); err != nil {
+		return fmt.Errorf("write attempt failed: %w", err)
 	}
-
-	return lastErr
+	log.Printf("Sent server network change notification to intermediate server")
+	return nil
 }
 
 // acceptIntermediateStreams accepts additional audio streams initiated by the
