@@ -8,6 +8,7 @@ import (
     "io"
     "log"
     "net"
+    "time"
 
     proto "github.com/kota-yata/p2p-quic-migration/shared/cmp9protocol"
     "github.com/quic-go/quic-go"
@@ -33,7 +34,10 @@ func main() {
 		NextProtos:   []string{"p2p-quic"},
 	}
 
-	quicConf := &quic.Config{}
+    quicConf := &quic.Config{
+        KeepAlivePeriod: 30 * time.Second,
+        MaxIdleTimeout:  1 * time.Minute,
+    }
 
 	ln, err := quic.ListenAddr(*addr, tlsConf, quicConf)
 	if err != nil {
