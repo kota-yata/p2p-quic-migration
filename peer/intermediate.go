@@ -33,7 +33,7 @@ func ConnectToServer(serverAddr string, tlsConfig *tls.Config, quicConfig *quic.
 		return nil, fmt.Errorf("failed to connect to intermediate server: %v", err)
 	}
 
-	log.Printf("Connected to intermediate server at %s", serverAddr)
+	log.Printf("Connected to a server at %s", serverAddr)
 	return conn, nil
 }
 

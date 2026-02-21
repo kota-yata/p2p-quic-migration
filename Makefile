@@ -1,6 +1,5 @@
-SERVER_ADDR ?= 0.0.0.0:1234
 SIGNALING_ADDR ?= 203.178.143.72:12345
-RELAY_ADDR ?= 0.0.0.0:12346
+RELAY_ADDR ?= 203.178.143.72:12346
 CERT_FILE ?= server.crt
 KEY_FILE ?= server.key
 ROLE ?= both
@@ -17,7 +16,7 @@ SND_IF_WIFI ?= eth0
 .PHONY: peer ps pr exp intermediate relay clean deps cert
 
 peer: deps cert
-	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -serverAddr "$(SIGNALING_ADDR)" -role "$(ROLE)"
+	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -serverAddr "$(SIGNALING_ADDR)" -relayAddr "$(RELAY_ADDR)" -role "$(ROLE)"
 
 ps: deps cert
 	$(MAKE) peer ROLE=sender
@@ -82,7 +81,7 @@ intermediate: deps cert
 	cd intermediate && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
 
 relay: deps cert
-	cd relay && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -addr "$(RELAY_ADDR)"
+	cd relay && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
 
 cert:
 	@if [ ! -f "$(CERT_FILE)" ] || [ ! -f "$(KEY_FILE)" ]; then \
