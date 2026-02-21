@@ -1,5 +1,6 @@
 SERVER_ADDR ?= 0.0.0.0:1234
 SIGNALING_ADDR ?= 203.178.143.72:12345
+RELAY_ADDR ?= 0.0.0.0:12346
 CERT_FILE ?= server.crt
 KEY_FILE ?= server.key
 ROLE ?= both
@@ -13,7 +14,7 @@ RCV_IF_WIFI ?= wlan0
 RCV_IF_CELL ?= rmnet_data2
 SND_IF_WIFI ?= eth0
 
-.PHONY: peer ps pr exp intermediate clean deps cert
+.PHONY: peer ps pr exp intermediate relay clean deps cert
 
 peer: deps cert
 	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -serverAddr "$(SIGNALING_ADDR)" -role "$(ROLE)"
@@ -80,6 +81,9 @@ cm-test:
 intermediate: deps cert
 	cd intermediate && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
 
+relay: deps cert
+	cd relay && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -addr "$(RELAY_ADDR)"
+
 cert:
 	@if [ ! -f "$(CERT_FILE)" ] || [ ! -f "$(KEY_FILE)" ]; then \
 		openssl req -x509 -newkey rsa:2048 -keyout "$(KEY_FILE)" -out "$(CERT_FILE)" -days 365 -nodes \
@@ -96,3 +100,4 @@ clean:
 build: deps
 	@cd peer && go build -o ../peer .
 	@cd intermediate && go build -o ../intermediate_server .
+	@cd relay && go build -o ../relay_server .
