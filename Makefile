@@ -52,12 +52,8 @@ clearm:
 
 exp-pr: deps cert # storing pids just in case of unexpected termination
 	@echo "Starting monitoring..."
-	@mkdir -p ./pcap ./log
-	@trap 'echo "Cleaning up..."; kill $$PID1 $$PID2 $$PID3 2>/dev/null; rm -f .*.pid' EXIT; \
+	@mkdir -p ./log
 	logcat -v time | grep --line-buffered -E "setWifiEnabled" > $(LOG_FILE) & PID1=$$!; echo $$PID1 > .logcat.pid; \
-	echo "Starting tcpdump on interfaces $(RCV_IF_WIFI) and $(RCV_IF_CELL)..."; \
-	tcpdump -i $(RCV_IF_WIFI) -w $(PCAP_RCV_WIFI) 2>/dev/null & PID2=$$!; echo $$PID2 > .tcpdump_wifi.pid; \
-	tcpdump -i $(RCV_IF_CELL) -w $(PCAP_RCV_CELL) 2>/dev/null & PID3=$$!; echo $$PID3 > .tcpdump_cell.pid; \
 	echo "Processes started. Running pr..."; \
 	$(MAKE) pr
 
