@@ -174,11 +174,11 @@ func (p *Peer) setupTransport() error {
 	}
 
 	log.Printf("Binding UDP transport to local address: %s", currentAddr.String())
-	p.intermediateUdpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: peerPort, IP: net.IPv4zero})
+	p.intermediateUdpConn, err = net.ListenUDP("udp", &net.UDPAddr{Port: peerPort, IP: net.IPv4zero})
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP for intermediate: %v", err)
 	}
-	p.relayUdpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: 0, IP: net.IPv4zero})
+	p.relayUdpConn, err = net.ListenUDP("udp", &net.UDPAddr{Port: 0, IP: net.IPv4zero})
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP for relay: %v", err)
 	}

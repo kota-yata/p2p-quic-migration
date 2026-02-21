@@ -74,8 +74,8 @@ func (a *app) run() error {
 	}
 	defer a.monitor.Stop()
 
-    log.Println("Connected to intermediate server. Waiting for primary IP changes...")
-    log.Println("Press Ctrl+C to exit.")
+	log.Println("Connected to intermediate server. Waiting for primary IP changes...")
+	log.Println("Press Ctrl+C to exit.")
 
 	// Wait for termination signal
 	sig := make(chan os.Signal, 1)
@@ -103,7 +103,7 @@ func (a *app) setupTLS() error {
 }
 
 func (a *app) setupTransport() error {
-	udp, err := net.ListenUDP("udp4", &net.UDPAddr{Port: serverPort, IP: net.IPv4zero})
+	udp, err := net.ListenUDP("udp", &net.UDPAddr{Port: serverPort, IP: net.IPv4zero})
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP: %v", err)
 	}
