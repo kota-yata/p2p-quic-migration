@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -13,21 +12,28 @@ import (
 	"time"
 
 	"github.com/kota-yata/p2p-quic-migration/shared"
+	proto "github.com/kota-yata/p2p-quic-migration/shared/cmp9protocol"
 	"github.com/quic-go/quic-go"
 )
 
 type PeerRegistry struct {
-	mu                  sync.RWMutex
-	peers               map[string]*shared.PeerInfo
-	connections         map[string]*quic.Conn
-	notificationStreams map[string]*quic.Stream
+	mu     sync.RWMutex
+	nextID uint32
+	// peer information, keyed by uint32 ID
+	peers map[uint32]*shared.PeerInfo
+	// connection by peer ID
+	connections map[uint32]*quic.Conn
+	// reverse lookup: connection remote addr string -> peer ID
+	connIndex map[string]uint32
+	// control stream for notifications by peer ID
+	notificationStreams map[uint32]*quic.Stream
 	audioRelays         map[string]*AudioRelaySession
 }
 
 // AudioRelaySession represents an active audio relay between two peers
 type AudioRelaySession struct {
-	sourcePeerID string
-	targetPeerID string
+	sourcePeerID uint32
+	targetPeerID uint32
 	sourceStream *quic.Stream
 	targetStream *quic.Stream
 	stopChan     chan bool
@@ -35,32 +41,38 @@ type AudioRelaySession struct {
 
 func NewPeerRegistry() *PeerRegistry {
 	return &PeerRegistry{
-		peers:               make(map[string]*shared.PeerInfo),
-		connections:         make(map[string]*quic.Conn),
-		notificationStreams: make(map[string]*quic.Stream),
+		nextID:              1,
+		peers:               make(map[uint32]*shared.PeerInfo),
+		connections:         make(map[uint32]*quic.Conn),
+		connIndex:           make(map[string]uint32),
+		notificationStreams: make(map[uint32]*quic.Stream),
 		audioRelays:         make(map[string]*AudioRelaySession),
 	}
 }
 
-func (pr *PeerRegistry) AddPeer(id string, addr net.Addr, conn *quic.Conn) {
+func (pr *PeerRegistry) AddPeer(addr net.Addr, conn *quic.Conn) uint32 {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 
 	now := time.Now()
+	id := pr.nextID
+	pr.nextID++
 	peerInfo := &shared.PeerInfo{
-		ID:          id,
+		ID:          fmt.Sprintf("%d", id),
 		Address:     addr.String(),
 		ConnectedAt: now,
 		LastSeen:    now,
 	}
 	pr.peers[id] = peerInfo
 	pr.connections[id] = conn
+	pr.connIndex[conn.RemoteAddr().String()] = id
 	log.Printf("Added peer %s with address %s", id, addr.String())
 
 	go pr.notifyPeersAboutNewPeer(id, peerInfo)
+	return id
 }
 
-func (pr *PeerRegistry) RemovePeer(id string) {
+func (pr *PeerRegistry) RemovePeer(id uint32) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 
@@ -71,11 +83,18 @@ func (pr *PeerRegistry) RemovePeer(id string) {
 			stream.Close()
 			delete(pr.notificationStreams, id)
 		}
+		// remove from reverse index if present
+		for k, v := range pr.connIndex {
+			if v == id {
+				delete(pr.connIndex, k)
+				break
+			}
+		}
 		log.Printf("Removed peer %s", id)
 	}
 }
 
-func (pr *PeerRegistry) UpdateLastSeen(id string) {
+func (pr *PeerRegistry) UpdateLastSeen(id uint32) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 
@@ -101,27 +120,16 @@ func (pr *PeerRegistry) GetPeerCount() int {
 	return len(pr.peers)
 }
 
-func (pr *PeerRegistry) AddNotificationStream(id string, stream *quic.Stream) {
+func (pr *PeerRegistry) AddNotificationStream(id uint32, stream *quic.Stream) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 	pr.notificationStreams[id] = stream
 	log.Printf("Added notification stream for peer %s", id)
 }
 
-func (pr *PeerRegistry) notifyPeersAboutNewPeer(newPeerID string, newPeerInfo *shared.PeerInfo) {
+func (pr *PeerRegistry) notifyPeersAboutNewPeer(newPeerID uint32, newPeerInfo *shared.PeerInfo) {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
-
-	notification := shared.PeerNotification{
-		Type: "NEW_PEER",
-		Peer: newPeerInfo,
-	}
-
-	notificationData, err := json.Marshal(notification)
-	if err != nil {
-		log.Printf("Failed to marshal peer notification: %v", err)
-		return
-	}
 
 	for peerID, stream := range pr.notificationStreams {
 		if peerID == newPeerID {
@@ -129,32 +137,29 @@ func (pr *PeerRegistry) notifyPeersAboutNewPeer(newPeerID string, newPeerInfo *s
 		}
 
 		go func(peerID string, stream *quic.Stream) {
-			_, err := stream.Write(notificationData)
+			// build binary notification
+			// newPeerInfo.ID is string, but message uses uint32; use newPeerID
+			addr, err := parseAddrString(newPeerInfo.Address)
 			if err != nil {
+				log.Printf("Failed to encode address for NEW_PEER: %v", err)
+				return
+			}
+			msg := proto.NewPeerNotif{PeerID: newPeerID, Address: addr}
+			if err := proto.WriteMessage(stream, msg); err != nil {
 				log.Printf("Failed to send peer notification to %s: %v", peerID, err)
 				return
 			}
-
-			log.Printf("Sent new peer notification to %s about %s", peerID, newPeerID)
-		}(peerID, stream)
+			log.Printf("Sent new peer notification to %s about %d", peerID, newPeerID)
+		}(fmt.Sprintf("%d", peerID), stream)
 	}
 }
 
-func (pr *PeerRegistry) handleNetworkChange(message, peerID string, conn *quic.Conn) {
-	parts := strings.Split(message, "|")
-	if len(parts) != 3 {
-		log.Printf("Invalid network change message format from %s: %s", peerID, message)
-		return
-	}
-
-	oldAddr := parts[1]
-	clientReportedAddr := parts[2]
-
-	// Use the observed external address instead of what the client reports
+func (pr *PeerRegistry) handleNetworkChange(req proto.NetworkChangeReq, peerID uint32, conn *quic.Conn) {
+	oldAddrStr := addrToString(req.OldAddress)
 	observedAddr := conn.RemoteAddr().String()
 
-	log.Printf("Network change detected for peer %s: client reported %s -> %s, but using observed address %s",
-		peerID, oldAddr, clientReportedAddr, observedAddr)
+	log.Printf("Network change detected for peer %d: old %s, observed new %s",
+		peerID, oldAddrStr, observedAddr)
 
 	pr.mu.Lock()
 	if peer, exists := pr.peers[peerID]; exists {
@@ -163,35 +168,28 @@ func (pr *PeerRegistry) handleNetworkChange(message, peerID string, conn *quic.C
 	}
 	pr.mu.Unlock()
 
-	pr.notifyPeersAboutNetworkChange(peerID, oldAddr, observedAddr)
+	pr.notifyPeersAboutNetworkChange(peerID, oldAddrStr, observedAddr)
 }
 
-func (pr *PeerRegistry) handleAudioRelay(message, sourcePeerID string, sourceStream *quic.Stream) {
-	parts := strings.Split(message, "|")
-	if len(parts) != 2 {
-		log.Printf("Invalid audio relay message format from %s: %s", sourcePeerID, message)
-		return
-	}
-
-	targetPeerID := parts[1]
-	log.Printf("Setting up audio relay from %s to %s", sourcePeerID, targetPeerID)
+func (pr *PeerRegistry) handleAudioRelay(targetPeerID uint32, sourcePeerID uint32, sourceStream *quic.Stream) {
+	log.Printf("Setting up audio relay from %d to %d", sourcePeerID, targetPeerID)
 
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 
 	targetConn, exists := pr.connections[targetPeerID]
 	if !exists {
-		log.Printf("Target peer %s not found for audio relay", targetPeerID)
+		log.Printf("Target peer %d not found for audio relay", targetPeerID)
 		return
 	}
 
 	targetStream, err := targetConn.OpenStreamSync(context.Background())
 	if err != nil {
-		log.Printf("Failed to open stream to target peer %s: %v", targetPeerID, err)
+		log.Printf("Failed to open stream to target peer %d: %v", targetPeerID, err)
 		return
 	}
 
-	relayID := fmt.Sprintf("%s->%s", sourcePeerID, targetPeerID)
+	relayID := fmt.Sprintf("%d->%d", sourcePeerID, targetPeerID)
 	relay := &AudioRelaySession{
 		sourcePeerID: sourcePeerID,
 		targetPeerID: targetPeerID,
@@ -210,7 +208,7 @@ func (pr *PeerRegistry) handleAudioRelay(message, sourcePeerID string, sourceStr
 func (ars *AudioRelaySession) StartRelay() {
 	defer func() {
 		ars.targetStream.Close()
-		log.Printf("Audio relay session ended: %s->%s", ars.sourcePeerID, ars.targetPeerID)
+		log.Printf("Audio relay session ended: %d->%d", ars.sourcePeerID, ars.targetPeerID)
 	}()
 
 	buffer := make([]byte, 4096)
@@ -248,22 +246,9 @@ func (ars *AudioRelaySession) StartRelay() {
 	}
 }
 
-func (pr *PeerRegistry) notifyPeersAboutNetworkChange(changedPeerID, oldAddr, newAddr string) {
+func (pr *PeerRegistry) notifyPeersAboutNetworkChange(changedPeerID uint32, oldAddr, newAddr string) {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
-
-	notification := shared.NetworkChangeNotification{
-		Type:       "NETWORK_CHANGE",
-		PeerID:     changedPeerID,
-		OldAddress: oldAddr,
-		NewAddress: newAddr,
-	}
-
-	notificationData, err := json.Marshal(notification)
-	if err != nil {
-		log.Printf("Failed to marshal network change notification: %v", err)
-		return
-	}
 
 	for peerID, stream := range pr.notificationStreams {
 		if peerID == changedPeerID {
@@ -271,14 +256,23 @@ func (pr *PeerRegistry) notifyPeersAboutNetworkChange(changedPeerID, oldAddr, ne
 		}
 
 		go func(peerID string, stream *quic.Stream) {
-			_, err := stream.Write(notificationData)
+			oldA, err := parseAddrString(oldAddr)
 			if err != nil {
+				log.Printf("encode old addr: %v", err)
+				return
+			}
+			newA, err := parseAddrString(newAddr)
+			if err != nil {
+				log.Printf("encode new addr: %v", err)
+				return
+			}
+			msg := proto.NetworkChangeNotif{PeerID: changedPeerID, OldAddress: oldA, NewAddress: newA}
+			if err := proto.WriteMessage(stream, msg); err != nil {
 				log.Printf("Failed to send network change notification to %s: %v", peerID, err)
 				return
 			}
-
-			log.Printf("Sent network change notification to %s about %s", peerID, changedPeerID)
-		}(peerID, stream)
+			log.Printf("Sent network change notification to %s about %d", peerID, changedPeerID)
+		}(fmt.Sprintf("%d", peerID), stream)
 	}
 }
 
@@ -323,15 +317,14 @@ func main() {
 }
 
 func handleConnection(conn *quic.Conn) {
-	peerID := conn.RemoteAddr().String()
-	registry.AddPeer(peerID, conn.RemoteAddr(), conn)
+	peerID := registry.AddPeer(conn.RemoteAddr(), conn)
 
 	defer func() {
 		registry.RemovePeer(peerID)
 		conn.CloseWithError(0, "")
 	}()
 
-	log.Printf("New Connection from: %s", conn.RemoteAddr())
+	log.Printf("New Connection from: %s (assigned ID %d)", conn.RemoteAddr(), peerID)
 
 	for {
 		stream, err := conn.AcceptStream(context.Background())
@@ -344,69 +337,91 @@ func handleConnection(conn *quic.Conn) {
 	}
 }
 
-func handleStream(stream *quic.Stream, conn *quic.Conn, peerID string) {
+func handleStream(stream *quic.Stream, conn *quic.Conn, peerID uint32) {
 	defer stream.Close()
 
 	registry.UpdateLastSeen(peerID)
 
-	buffer := make([]byte, 1024)
+	// Read framed messages until EOF for control streams.
+	// If the first message is AUDIO_RELAY_REQ, hand over to relay logic and return.
+	first := true
 	for {
-		n, err := stream.Read(buffer)
+		msg, err := proto.ReadMessage(stream)
 		if err != nil {
-			if err.Error() == "EOF" {
-				log.Printf("Stream closed by peer %s", peerID)
+			if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
+				log.Printf("Stream closed by peer %d", peerID)
 			} else {
 				log.Printf("Stream read error: %v", err)
 			}
 			return
 		}
 
-		message := string(buffer[:n])
-
-		if strings.HasPrefix(message, "NETWORK_CHANGE|") {
-			registry.handleNetworkChange(message, peerID, conn)
-			continue
-		}
-
-		if strings.HasPrefix(message, "AUDIO_RELAY|") {
-			registry.handleAudioRelay(message, peerID, stream)
+		switch m := msg.(type) {
+		case proto.AudioRelayReq:
+			// Only valid as first frame on a fresh stream
+			if !first {
+				log.Printf("AUDIO_RELAY_REQ received not as first frame; closing stream")
+				return
+			}
+			registry.handleAudioRelay(m.TargetPeerID, peerID, stream)
 			return
-		}
-
-		switch message {
-		case "GET_PEERS":
-			allPeers := registry.GetPeers()
-			peers := make([]*shared.PeerInfo, 0, len(allPeers))
-			for _, peer := range allPeers {
-				if peer.ID != peerID {
-					peers = append(peers, peer)
+		case proto.GetPeersReq:
+			// build list excluding self
+			registry.mu.RLock()
+			entries := make([]proto.PeerEntry, 0, len(registry.peers))
+			for id, info := range registry.peers {
+				if id == peerID {
+					continue
 				}
+				addr, err := parseAddrString(info.Address)
+				if err != nil {
+					continue
+				}
+				entries = append(entries, proto.PeerEntry{PeerID: id, Address: addr})
 			}
-
-			response, err := json.Marshal(peers)
-			if err != nil {
-				log.Printf("Failed to marshal peers: %v", err)
-				continue
-			}
-
-			_, err = stream.Write(response)
-			if err != nil {
-				log.Printf("Failed to write peers response: %v", err)
+			registry.mu.RUnlock()
+			resp := proto.PeerListResp{Peers: entries}
+			if err := proto.WriteMessage(stream, resp); err != nil {
+				log.Printf("Failed to write peer list resp: %v", err)
 				return
 			}
-			log.Printf("Sent peer list to %s: %d peers (excluding self)", conn.RemoteAddr(), len(peers))
-
+			log.Printf("Sent peer list to %s: %d peers (excluding self)", conn.RemoteAddr(), len(entries))
 			registry.AddNotificationStream(peerID, stream)
-			log.Printf("Peer %s registered for notifications on the same stream", peerID)
+			log.Printf("Peer %d registered for notifications on the same stream", peerID)
+		case proto.NetworkChangeReq:
+			registry.handleNetworkChange(m, peerID, conn)
 		default:
-			// For any other data, respond with observed address and peer count
-			response := fmt.Sprintf("Observed address: %s, Connected peers: %d",
-				conn.RemoteAddr().String(), registry.GetPeerCount())
-			_, err = stream.Write([]byte(response))
-			if err != nil {
-				log.Printf("Failed to write response: %v", err)
-				return
-			}
+			log.Printf("Unhandled message type: %T", m)
 		}
+		first = false
 	}
+}
+
+// helper: parse "host:port" into protocol Address
+func parseAddrString(s string) (proto.Address, error) {
+	var out proto.Address
+	host, portStr, err := net.SplitHostPort(s)
+	if err != nil {
+		return out, err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return out, fmt.Errorf("invalid IP: %s", host)
+	}
+	portU16 := uint16(0)
+	if p, err := net.LookupPort("udp", portStr); err == nil {
+		portU16 = uint16(p)
+	} else {
+		return out, err
+	}
+	if ip.To4() != nil {
+		out = proto.Address{AF: 0x04, IP: ip.To4(), Port: portU16}
+	} else {
+		out = proto.Address{AF: 0x06, IP: ip.To16(), Port: portU16}
+	}
+	return out, nil
+}
+
+func addrToString(a proto.Address) string {
+	return net.JoinHostPort(a.IP.String(), fmt.Sprintf("%d", a.Port))
 }

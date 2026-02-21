@@ -5,13 +5,12 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"time"
 
-	"github.com/kota-yata/p2p-quic-migration/shared"
+	proto "github.com/kota-yata/p2p-quic-migration/shared/cmp9protocol"
 	"github.com/quic-go/quic-go"
 )
 
@@ -45,76 +44,65 @@ func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) 
 		return
 	}
 
-	buffer := make([]byte, 4096)
 	isFirst := true
-
 	for {
-		n, err := stream.Read(buffer)
+		msg, err := proto.ReadMessage(stream)
 		if err != nil {
 			log.Printf("Failed to read from intermediate server: %v", err)
 			return
 		}
-
-		log.Printf("Received %d bytes from intermediate server", n)
-
-		data := buffer[:n]
-		if isFirst {
-			handleInitialPeerList(p, data)
+		switch m := msg.(type) {
+		case proto.PeerListResp:
+			if !isFirst {
+				log.Printf("Unexpected PEER_LIST_RESP after initial exchange; ignoring")
+				continue
+			}
+			handleInitialPeerList(p, m)
 			isFirst = false
-			continue
+		case proto.NewPeerNotif:
+			handleNewPeerNotification(p, m)
+		case proto.NetworkChangeNotif:
+			handleNetworkChangeNotification(p, m)
+		default:
+			log.Printf("Unexpected message on control stream: %T", m)
 		}
-		handlePeerNotification(p, data)
 	}
 }
 
 func sendPeerRequest(stream *quic.Stream) error {
-	if _, err := stream.Write([]byte("GET_PEERS")); err != nil {
-		return fmt.Errorf("failed to send GET_PEERS request: %v", err)
-	}
-	return nil
+	return proto.WriteMessage(stream, proto.GetPeersReq{})
 }
 
-func handleInitialPeerList(p *Peer, data []byte) {
-	var peers []shared.PeerInfo
-	if err := json.Unmarshal(data, &peers); err != nil {
-		log.Printf("Failed to unmarshal peer list: %v", err)
-		return
+func handleInitialPeerList(p *Peer, resp proto.PeerListResp) {
+	log.Printf("Received %d peers from intermediate server:", len(resp.Peers))
+	for _, e := range resp.Peers {
+		addr := net.JoinHostPort(e.Address.IP.String(), fmt.Sprintf("%d", e.Address.Port))
+		log.Printf("  Peer: %d (Address: %s)", e.PeerID, addr)
 	}
-
-	log.Printf("Received %d peers from intermediate server:", len(peers))
-	for _, peer := range peers {
-		log.Printf("  Peer: %s (Address: %s)", peer.ID, peer.Address)
-	}
-
-	p.handleInitialPeers(peers)
+	p.handleInitialPeers(resp.Peers)
 }
 
-func handlePeerNotification(p *Peer, data []byte) {
-	var pn shared.PeerNotification
-	if err := json.Unmarshal(data, &pn); err == nil && pn.Type == "NEW_PEER" {
-		log.Printf("Received peer notification - Type: %s, Peer: %s (Address: %s)", pn.Type, pn.Peer.ID, pn.Peer.Address)
-		p.handleNewPeer(*pn.Peer)
-		return
-	}
+func handleNewPeerNotification(p *Peer, n proto.NewPeerNotif) {
+	addr := net.JoinHostPort(n.Address.IP.String(), fmt.Sprintf("%d", n.Address.Port))
+	log.Printf("Received peer notification - NEW_PEER: id=%d addr=%s", n.PeerID, addr)
+	p.handleNewPeer(proto.PeerEntry{PeerID: n.PeerID, Address: n.Address})
+}
 
-	var nn shared.NetworkChangeNotification
-	if err := json.Unmarshal(data, &nn); err == nil && nn.Type == "NETWORK_CHANGE" {
-		log.Printf("Received network change notification - Peer: %s, %s -> %s", nn.PeerID, nn.OldAddress, nn.NewAddress)
-		p.HandleNetworkChange(nn.PeerID, nn.OldAddress, nn.NewAddress)
-		return
-	}
-
-	log.Printf("Failed to unmarshal notification data: %s", string(data))
+func handleNetworkChangeNotification(p *Peer, n proto.NetworkChangeNotif) {
+	oldA := net.JoinHostPort(n.OldAddress.IP.String(), fmt.Sprintf("%d", n.OldAddress.Port))
+	newA := net.JoinHostPort(n.NewAddress.IP.String(), fmt.Sprintf("%d", n.NewAddress.Port))
+	log.Printf("Received network change notification - Peer: %d, %s -> %s", n.PeerID, oldA, newA)
+	p.HandleNetworkChange(n.PeerID, oldA, newA)
 }
 
 // startAudioRelay starts streaming audio over the provided stream and returns a stopper.
-func startAudioRelay(stream *quic.Stream, targetPeerID string) func() {
+func startAudioRelay(stream *quic.Stream, targetPeerID uint32) func() {
 	stop := make(chan struct{}, 1)
 
 	go func() {
 		defer stream.Close()
 
-		log.Printf("Starting audio relay for peer %s from position %d bytes", targetPeerID, 0)
+		log.Printf("Starting audio relay for peer %d from position %d bytes", targetPeerID, 0)
 
 		audioStreamer := NewAudioStreamerFromPosition(stream, 0)
 
@@ -128,10 +116,10 @@ func startAudioRelay(stream *quic.Stream, targetPeerID string) func() {
 			if err != nil {
 				log.Printf("Audio relay streaming failed: %v", err)
 			} else {
-				log.Printf("Audio relay to peer %s completed normally", targetPeerID)
+				log.Printf("Audio relay to peer %d completed normally", targetPeerID)
 			}
 		case <-stop:
-			log.Printf("Audio relay to peer %s stopped due to P2P reconnection", targetPeerID)
+			log.Printf("Audio relay to peer %d stopped due to P2P reconnection", targetPeerID)
 			stream.Close()
 			return
 		}
