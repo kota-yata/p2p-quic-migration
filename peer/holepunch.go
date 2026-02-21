@@ -74,3 +74,25 @@ func performHolePunchAttempt(ctx context.Context, tr *quic.Transport, peerAddrRe
 
 	return conn, nil
 }
+
+// attemptPrioritizedHolePunch tries a sequence of candidate addresses in order,
+// using the same retry policy as attemptNATHolePunch per candidate. Cancels on success.
+func attemptPrioritizedHolePunch(ctx context.Context, tr *quic.Transport, candidates []string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan connchan) {
+    for idx, addr := range candidates {
+        select {
+        case <-ctx.Done():
+            return
+        default:
+        }
+        log.Printf("Hole punching candidate %d/%d: %s", idx+1, len(candidates), addr)
+        // Use a child context so cancels between candidates are respected
+        cctx, cancel := context.WithCancel(ctx)
+        attemptNATHolePunch(cctx, tr, addr, tlsConfig, quicConfig, stopChan)
+        cancel()
+        // attemptNATHolePunch only returns after success or exhausting tries
+        // If success occurred, monitorHolepunch will cancel via ctx; check ctx
+        if ctx.Err() != nil {
+            return
+        }
+    }
+}

@@ -39,62 +39,82 @@ func ConnectToServer(serverAddr string, tlsConfig *tls.Config, quicConfig *quic.
 
 // Relay role is handled by the intermediate server; no separate dial helper.
 
-// IntermediateControlReadLoop exchanges peer info and handles ongoing notifications.
+// IntermediateControlReadLoop handles the v2 flow: ObservedAddr -> SelfAddrsSet -> GetPeerEndpointsReq
 func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) {
-	if err := sendPeerRequest(stream); err != nil {
-		log.Printf("Failed to send peer request: %v", err)
-		return
-	}
+    // Expect ObservedAddr first
+    msg, err := proto.ReadMessage(stream)
+    if err != nil {
+        log.Printf("Failed to read ObservedAddr: %v", err)
+        return
+    }
+    oa, ok := msg.(proto.ObservedAddr)
+    if !ok {
+        log.Printf("Unexpected first message on control stream: %T", msg)
+        return
+    }
+    p.ownObservedIP = oa.Observed.IP
+    log.Printf("Server observed our address: %s:%d", oa.Observed.IP.String(), oa.Observed.Port)
 
-	isFirst := true
-	for {
-		msg, err := proto.ReadMessage(stream)
-		if err != nil {
-			log.Printf("Failed to read from intermediate server: %v", err)
-			return
-		}
-		switch m := msg.(type) {
-		case proto.PeerListResp:
-			if !isFirst {
-				log.Printf("Unexpected PEER_LIST_RESP after initial exchange; ignoring")
-				continue
-			}
-			handleInitialPeerList(p, m)
-			isFirst = false
-		case proto.NewPeerNotif:
-			handleNewPeerNotification(p, m)
-		case proto.NetworkChangeNotif:
-			handleNetworkChangeNotification(p, m)
-		default:
-			log.Printf("Unexpected message on control stream: %T", m)
-		}
-	}
-}
+    // Determine local address (from network monitor + UDP local port)
+    localIP, err := p.networkMonitor.GetCurrentAddress()
+    if err != nil {
+        log.Printf("Failed to get local IP: %v", err)
+        return
+    }
+    // Read the actual bound local port from UDPConn if available
+    localPort := peerPort
+    if p.intermediateUdpConn != nil {
+        if la, ok := p.intermediateUdpConn.LocalAddr().(*net.UDPAddr); ok && la != nil {
+            if la.Port != 0 {
+                localPort = la.Port
+            }
+        }
+    }
+    var localAddr proto.Address
+    if localIP.To4() != nil {
+        localAddr = proto.Address{AF: 0x04, IP: localIP.To4(), Port: uint16(localPort)}
+    } else {
+        localAddr = proto.Address{AF: 0x06, IP: localIP.To16(), Port: uint16(localPort)}
+    }
 
-func sendPeerRequest(stream *quic.Stream) error {
-	return proto.WriteMessage(stream, proto.GetPeersReq{})
-}
+    // Send SelfAddrsSet with our observed (from server) and local
+    if err := proto.WriteMessage(stream, proto.SelfAddrsSet{Observed: oa.Observed, HasLocal: true, Local: localAddr}); err != nil {
+        log.Printf("Failed to send SelfAddrsSet: %v", err)
+        return
+    }
 
-func handleInitialPeerList(p *Peer, resp proto.PeerListResp) {
-	log.Printf("Received %d peers from intermediate server:", len(resp.Peers))
-	for _, e := range resp.Peers {
-		addr := net.JoinHostPort(e.Address.IP.String(), fmt.Sprintf("%d", e.Address.Port))
-		log.Printf("  Peer: %d (Address: %s)", e.PeerID, addr)
-	}
-	p.handleInitialPeers(resp.Peers)
-}
+    // Request endpoints directory
+    if err := proto.WriteMessage(stream, proto.GetPeerEndpointsReq{}); err != nil {
+        log.Printf("Failed to send GetPeerEndpointsReq: %v", err)
+        return
+    }
 
-func handleNewPeerNotification(p *Peer, n proto.NewPeerNotif) {
-	addr := net.JoinHostPort(n.Address.IP.String(), fmt.Sprintf("%d", n.Address.Port))
-	log.Printf("Received peer notification - NEW_PEER: id=%d addr=%s", n.PeerID, addr)
-	p.handleNewPeer(proto.PeerEntry{PeerID: n.PeerID, Address: n.Address})
+    for {
+        msg, err := proto.ReadMessage(stream)
+        if err != nil {
+            log.Printf("Failed to read from intermediate server: %v", err)
+            return
+        }
+        switch m := msg.(type) {
+        case proto.PeerEndpointsResp:
+            log.Printf("Received %d peer endpoints from server", len(m.Entries))
+            p.handleInitialEndpoints(m.Entries)
+        case proto.NewPeerEndpointNotif:
+            log.Printf("New peer endpoint: id=%d", m.Entry.PeerID)
+            p.handleNewEndpoint(m.Entry)
+        case proto.NetworkChangeNotif:
+            handleNetworkChangeNotification(p, m)
+        default:
+            log.Printf("Unexpected message on control stream: %T", m)
+        }
+    }
 }
 
 func handleNetworkChangeNotification(p *Peer, n proto.NetworkChangeNotif) {
-	oldA := net.JoinHostPort(n.OldAddress.IP.String(), fmt.Sprintf("%d", n.OldAddress.Port))
-	newA := net.JoinHostPort(n.NewAddress.IP.String(), fmt.Sprintf("%d", n.NewAddress.Port))
-	log.Printf("Received network change notification - Peer: %d, %s -> %s", n.PeerID, oldA, newA)
-	p.HandleNetworkChange(n.PeerID, oldA, newA)
+    oldA := net.JoinHostPort(n.OldAddress.IP.String(), fmt.Sprintf("%d", n.OldAddress.Port))
+    newA := net.JoinHostPort(n.NewAddress.IP.String(), fmt.Sprintf("%d", n.NewAddress.Port))
+    log.Printf("Received network change notification - Peer: %d, %s -> %s", n.PeerID, oldA, newA)
+    p.HandleNetworkChange(n.PeerID, oldA, newA)
 }
 
 // startAudioRelay starts streaming audio over the provided stream and returns a stopper.

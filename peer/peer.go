@@ -31,10 +31,17 @@ type Peer struct {
     intermediateStream    *quic.Stream
     relayAllowStream      *quic.Stream
     networkMonitor        *network_monitor.NetworkMonitor
-    knownPeers            map[uint32]string
+    endpoints             map[uint32]endpointInfo
+    ownObservedIP         net.IP
     audioRelayStop        func()
     // hole punch cancellation management
     hpCancels []context.CancelFunc
+}
+
+type endpointInfo struct {
+    observed string
+    local    string
+    hasLocal bool
 }
 
 // openRelayAllowStream opens (or reopens) the control stream used to send allowlist updates.
@@ -55,38 +62,34 @@ func (p *Peer) openRelayAllowStream() error {
 
 // sendRelayAllowlistUpdate sends the current known peers as allowlist to the relay.
 func (p *Peer) sendRelayAllowlistUpdate() error {
-	if err := p.openRelayAllowStream(); err != nil {
-		return err
-	}
-	addrs := make([]proto.Address, 0, len(p.knownPeers))
-	for _, addrStr := range p.knownPeers {
-		host, portStr, err := net.SplitHostPort(addrStr)
-		if err != nil {
-			continue
-		}
-		ip := net.ParseIP(host)
-		if ip == nil {
-			continue
-		}
-		var portNum uint16
-		if pn, err := strconv.Atoi(portStr); err == nil {
-			portNum = uint16(pn)
-		} else if p2, err := net.LookupPort("udp", portStr); err == nil {
-			portNum = uint16(p2)
-		} else {
-			continue
-		}
-		if ip.To4() != nil {
-			addrs = append(addrs, proto.Address{AF: 0x04, IP: ip.To4(), Port: portNum})
-		} else {
-			addrs = append(addrs, proto.Address{AF: 0x06, IP: ip.To16(), Port: portNum})
-		}
-	}
-	msg := proto.RelayAllowlistSet{Addresses: addrs}
-	if err := proto.WriteMessage(p.relayAllowStream, msg); err != nil {
-		return err
-	}
-	return nil
+    if err := p.openRelayAllowStream(); err != nil {
+        return err
+    }
+    // Build allowlist based on initial phase strategy: include local+observed when in same segment
+    addrs := make([]proto.Address, 0, len(p.endpoints)*2)
+    for _, ep := range p.endpoints {
+        // Always include observed
+        if a, ok := toProtoAddr(ep.observed); ok {
+            addrs = append(addrs, a)
+        }
+        // Include local if present and same segment (compare observed IPs)
+        if ep.hasLocal && p.ownObservedIP != nil {
+            // Determine peer observed IP
+            if host, _, err := net.SplitHostPort(ep.observed); err == nil {
+                peerObsIP := net.ParseIP(host)
+                if sameIPFamily(peerObsIP, p.ownObservedIP) && ipEqual(peerObsIP, p.ownObservedIP) {
+                    if a, ok := toProtoAddr(ep.local); ok {
+                        addrs = append(addrs, a)
+                    }
+                }
+            }
+        }
+    }
+    msg := proto.RelayAllowlistSet{Addresses: addrs}
+    if err := proto.WriteMessage(p.relayAllowStream, msg); err != nil {
+        return err
+    }
+    return nil
 }
 
 func (p *Peer) Run() error {
@@ -118,14 +121,14 @@ func (p *Peer) Run() error {
 		log.Printf("warning: failed to send initial relay allowlist: %v", err)
 	}
 
-	// init peer discovery and handling
-	p.knownPeers = make(map[uint32]string)
-	stream, err := intermediateConn.OpenStreamSync(context.Background())
-	if err != nil {
-		return fmt.Errorf("failed to open peer discovery stream: %v", err)
-	}
-	defer stream.Close()
-	p.intermediateStream = stream
+    // init peer discovery and handling
+    p.endpoints = make(map[uint32]endpointInfo)
+    stream, err := intermediateConn.OpenStreamSync(context.Background())
+    if err != nil {
+        return fmt.Errorf("failed to open peer discovery stream: %v", err)
+    }
+    defer stream.Close()
+    p.intermediateStream = stream
 	go IntermediateControlReadLoop(intermediateConn, p, stream)
 	// Accept additional streams from the intermediate (e.g., audio relay)
 	go p.acceptRelayStreams()
@@ -227,7 +230,7 @@ func (p *Peer) runPeerListener() error {
 }
 
 func (p *Peer) handleIncomingConnection(conn *quic.Conn) {
-	log.Print("New Peer Connection Accepted. Setting up audio streaming...")
+    log.Print("New Peer Connection Accepted. Setting up audio streaming...")
 
 	// stop any relay now that direct P2P is up
 	p.StopAudioRelay()
@@ -237,26 +240,35 @@ func (p *Peer) handleIncomingConnection(conn *quic.Conn) {
 	handleCommunicationAsAcceptor(conn, p.config.role)
 }
 
-func (p *Peer) handleInitialPeers(entries []proto.PeerEntry) {
-	for _, e := range entries {
-		addr := net.JoinHostPort(e.Address.IP.String(), fmt.Sprintf("%d", e.Address.Port))
-		p.knownPeers[e.PeerID] = addr
-		p.startHolePunching(addr)
-	}
-	// Update relay allow list with current known peers
-	if err := p.sendRelayAllowlistUpdate(); err != nil {
-		log.Printf("Failed to send relay allowlist after initial peers: %v", err)
-	}
+// initial endpoints received from server
+func (p *Peer) handleInitialEndpoints(entries []proto.PeerEndpoint) {
+    for _, e := range entries {
+        peerObs := net.JoinHostPort(e.Observed.IP.String(), fmt.Sprintf("%d", e.Observed.Port))
+        var peerLoc string
+        if e.Flags&0x01 != 0 {
+            peerLoc = net.JoinHostPort(e.Local.IP.String(), fmt.Sprintf("%d", e.Local.Port))
+        }
+        p.endpoints[e.PeerID] = endpointInfo{observed: peerObs, local: peerLoc, hasLocal: e.Flags&0x01 != 0}
+        candidates := p.buildCandidates(peerObs, peerLoc, e.Flags&0x01 != 0)
+        p.startHolePunchingCandidates(candidates)
+    }
+    if err := p.sendRelayAllowlistUpdate(); err != nil {
+        log.Printf("Failed to send relay allowlist after initial endpoints: %v", err)
+    }
 }
 
-func (p *Peer) handleNewPeer(entry proto.PeerEntry) {
-	addr := net.JoinHostPort(entry.Address.IP.String(), fmt.Sprintf("%d", entry.Address.Port))
-	p.knownPeers[entry.PeerID] = addr
-	p.startHolePunching(addr)
-	// Update relay allow list to include this peer
-	if err := p.sendRelayAllowlistUpdate(); err != nil {
-		log.Printf("Failed to send relay allowlist after new peer: %v", err)
-	}
+func (p *Peer) handleNewEndpoint(e proto.PeerEndpoint) {
+    peerObs := net.JoinHostPort(e.Observed.IP.String(), fmt.Sprintf("%d", e.Observed.Port))
+    var peerLoc string
+    if e.Flags&0x01 != 0 {
+        peerLoc = net.JoinHostPort(e.Local.IP.String(), fmt.Sprintf("%d", e.Local.Port))
+    }
+    p.endpoints[e.PeerID] = endpointInfo{observed: peerObs, local: peerLoc, hasLocal: e.Flags&0x01 != 0}
+    candidates := p.buildCandidates(peerObs, peerLoc, e.Flags&0x01 != 0)
+    p.startHolePunchingCandidates(candidates)
+    if err := p.sendRelayAllowlistUpdate(); err != nil {
+        log.Printf("Failed to send relay allowlist after new endpoint: %v", err)
+    }
 }
 
 func (p *Peer) startHolePunching(peerAddr string) {
@@ -276,10 +288,14 @@ func (p *Peer) StopAudioRelay() {
 }
 
 func (p *Peer) HandleNetworkChange(peerID uint32, oldAddr, newAddr string) {
-	log.Printf("Network change notification from server: peer %d changed from %s to %s", peerID, oldAddr, newAddr)
+    log.Printf("Network change notification from server: peer %d changed from %s to %s", peerID, oldAddr, newAddr)
 
-	// Update local cache of peer address for allow listing and hole punching
-	p.knownPeers[peerID] = newAddr
+    // Update peer observed address; clear local for post-initial behavior
+    ei := p.endpoints[peerID]
+    ei.observed = newAddr
+    ei.local = ""
+    ei.hasLocal = false
+    p.endpoints[peerID] = ei
 
 	// Send updated allow list to relay so it will accept from the new address
 	if err := p.sendRelayAllowlistUpdate(); err != nil {
@@ -296,24 +312,25 @@ func (p *Peer) HandleNetworkChange(peerID uint32, oldAddr, newAddr string) {
 		log.Printf("Role=%s; skipping audio relay during migration", p.config.role)
 	}
 
-	log.Printf("Starting new hole punching to updated address: %s", newAddr)
-	p.startHolePunching(newAddr)
+    log.Printf("Starting new hole punching to updated address (observed): %s", newAddr)
+    p.startHolePunchingCandidates([]string{newAddr})
 }
 
 func (p *Peer) StartHolePunchingToAllPeers() {
-	log.Printf("Server starting hole punching to all known peers after network change")
+    log.Printf("Server starting hole punching to all known peers after network change")
 
-	if len(p.knownPeers) == 0 {
-		log.Printf("No known peers to hole punch to")
-		return
-	}
+    if len(p.endpoints) == 0 {
+        log.Printf("No known peers to hole punch to")
+        return
+    }
 
-	for peerID, addr := range p.knownPeers {
-		log.Printf("Server starting hole punch to peer %d at %s", peerID, addr)
-		ctx, cancel := context.WithCancel(context.Background())
-		p.hpCancels = append(p.hpCancels, cancel)
-		go attemptNATHolePunch(ctx, p.intermediateTransport, addr, p.tlsConfig, p.quicConfig, connectionEstablished)
-	}
+    for peerID, ep := range p.endpoints {
+        log.Printf("Server starting hole punch to peer %d", peerID)
+        candidates := p.buildCandidates(ep.observed, ep.local, ep.hasLocal)
+        ctx, cancel := context.WithCancel(context.Background())
+        p.hpCancels = append(p.hpCancels, cancel)
+        go attemptPrioritizedHolePunch(ctx, p.intermediateTransport, candidates, p.tlsConfig, p.quicConfig, connectionEstablished)
+    }
 }
 
 func (p *Peer) switchToAudioRelay(targetPeerID uint32) error {
@@ -471,4 +488,68 @@ func (p *Peer) acceptRelayStreams() {
         log.Printf("Accepted incoming relay stream from server (relay)")
         go handleIncomingAudioStream(stream, "relay")
     }
+}
+
+// Helpers for endpoint handling
+func (p *Peer) buildCandidates(peerObserved, peerLocal string, hasLocal bool) []string {
+    // Decide if we are on the same global segment (observed IP match)
+    if p.ownObservedIP != nil && hasLocal {
+        if host, _, err := net.SplitHostPort(peerObserved); err == nil {
+            peerObsIP := net.ParseIP(host)
+            if sameIPFamily(peerObsIP, p.ownObservedIP) && ipEqual(peerObsIP, p.ownObservedIP) && peerLocal != "" {
+                return []string{peerLocal, peerObserved}
+            }
+        }
+    }
+    return []string{peerObserved}
+}
+
+func sameIPFamily(a, b net.IP) bool {
+    if a == nil || b == nil {
+        return false
+    }
+    return (a.To4() != nil) == (b.To4() != nil)
+}
+
+func ipEqual(a, b net.IP) bool {
+    if a == nil || b == nil {
+        return false
+    }
+    if a.To4() != nil && b.To4() != nil {
+        return a.To4().Equal(b.To4())
+    }
+    return a.Equal(b)
+}
+
+func toProtoAddr(addrStr string) (proto.Address, bool) {
+    var zero proto.Address
+    host, portStr, err := net.SplitHostPort(addrStr)
+    if err != nil {
+        return zero, false
+    }
+    ip := net.ParseIP(host)
+    if ip == nil {
+        return zero, false
+    }
+    var portNum uint16
+    if pn, err := strconv.Atoi(portStr); err == nil {
+        portNum = uint16(pn)
+    } else if p2, err := net.LookupPort("udp", portStr); err == nil {
+        portNum = uint16(p2)
+    } else {
+        return zero, false
+    }
+    if ip.To4() != nil {
+        return proto.Address{AF: 0x04, IP: ip.To4(), Port: portNum}, true
+    }
+    return proto.Address{AF: 0x06, IP: ip.To16(), Port: portNum}, true
+}
+
+func (p *Peer) startHolePunchingCandidates(candidates []string) {
+    if len(candidates) == 0 {
+        return
+    }
+    ctx, cancel := context.WithCancel(context.Background())
+    p.hpCancels = append(p.hpCancels, cancel)
+    go attemptPrioritizedHolePunch(ctx, p.intermediateTransport, candidates, p.tlsConfig, p.quicConfig, connectionEstablished)
 }

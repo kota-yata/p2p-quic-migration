@@ -18,6 +18,12 @@ const (
     TypeNetworkChangeNotif MessageType = 0x05
     TypeAudioRelayReq      MessageType = 0x06
     TypeRelayAllowlistSet  MessageType = 0x07
+    // v2 automatic local/global addressing
+    TypeObservedAddr           MessageType = 0x08
+    TypeSelfAddrsSet           MessageType = 0x09
+    TypeGetPeerEndpointsReq    MessageType = 0x0A
+    TypePeerEndpointsResp      MessageType = 0x0B
+    TypeNewPeerEndpointNotif   MessageType = 0x0C
 )
 
 // Message is the common interface for all control messages.
@@ -29,9 +35,9 @@ type Message interface {
 // Address is a compact socket address encoding.
 // AF: 0x04 (IPv4) or 0x06 (IPv6)
 type Address struct {
-	AF   uint8
-	IP   net.IP
-	Port uint16
+    AF   uint8
+    IP   net.IP
+    Port uint16
 }
 
 func (a Address) MarshalBinary() ([]byte, error) {
@@ -352,7 +358,209 @@ func decodePayload(t MessageType, p []byte) (Message, error) {
             return nil, errors.New("extra bytes in RELAY_ALLOWLIST_SET payload")
         }
         return RelayAllowlistSet{Addresses: addrs}, nil
+    case TypeObservedAddr:
+        var a Address
+        n, err := a.UnmarshalBinary(p)
+        if err != nil {
+            return nil, err
+        }
+        if n != len(p) {
+            return nil, errors.New("extra bytes in OBSERVED_ADDR payload")
+        }
+        return ObservedAddr{Observed: a}, nil
+    case TypeSelfAddrsSet:
+        // Observed Address + Flags (1 byte) [+ Local Address if flag set]
+        var obs Address
+        off, err := obs.UnmarshalBinary(p)
+        if err != nil {
+            return nil, err
+        }
+        if len(p[off:]) < 1 {
+            return nil, io.ErrUnexpectedEOF
+        }
+        flags := p[off]
+        off++
+        var local Address
+        if flags&0x01 != 0 {
+            n, err := local.UnmarshalBinary(p[off:])
+            if err != nil {
+                return nil, err
+            }
+            off += n
+        }
+        if off != len(p) {
+            return nil, errors.New("extra bytes in SELF_ADDRS_SET payload")
+        }
+        return SelfAddrsSet{Observed: obs, HasLocal: flags&0x01 != 0, Local: local}, nil
+    case TypeGetPeerEndpointsReq:
+        if len(p) != 0 {
+            return nil, errors.New("GET_PEER_ENDPOINTS_REQ must have empty payload")
+        }
+        return GetPeerEndpointsReq{}, nil
+    case TypePeerEndpointsResp:
+        if len(p) < 2 {
+            return nil, io.ErrUnexpectedEOF
+        }
+        count := int(binary.BigEndian.Uint16(p[:2]))
+        off := 2
+        entries := make([]PeerEndpoint, 0, count)
+        for i := 0; i < count; i++ {
+            ep, n, err := unmarshalPeerEndpoint(p[off:])
+            if err != nil {
+                return nil, err
+            }
+            off += n
+            entries = append(entries, ep)
+        }
+        if off != len(p) {
+            return nil, errors.New("extra bytes in PEER_ENDPOINTS_RESP payload")
+        }
+        return PeerEndpointsResp{Entries: entries}, nil
+    case TypeNewPeerEndpointNotif:
+        ep, n, err := unmarshalPeerEndpoint(p)
+        if err != nil {
+            return nil, err
+        }
+        if n != len(p) {
+            return nil, errors.New("extra bytes in NEW_PEER_ENDPOINT_NOTIF payload")
+        }
+        return NewPeerEndpointNotif{Entry: ep}, nil
     default:
         return nil, fmt.Errorf("unknown message type: 0x%02x", uint8(t))
     }
+}
+
+// v2: endpoint directory
+
+// ObservedAddr is pushed by the server immediately on control stream start.
+type ObservedAddr struct {
+    Observed Address
+}
+
+func (ObservedAddr) Type() MessageType { return TypeObservedAddr }
+func (m ObservedAddr) MarshalBinaryPayload() ([]byte, error) {
+    return m.Observed.MarshalBinary()
+}
+
+// SelfAddrsSet is sent by the peer once after receiving ObservedAddr.
+type SelfAddrsSet struct {
+    Observed Address
+    HasLocal bool
+    Local    Address
+}
+
+func (SelfAddrsSet) Type() MessageType { return TypeSelfAddrsSet }
+func (m SelfAddrsSet) MarshalBinaryPayload() ([]byte, error) {
+    ob, err := m.Observed.MarshalBinary()
+    if err != nil {
+        return nil, err
+    }
+    flags := byte(0)
+    if m.HasLocal {
+        flags |= 0x01
+    }
+    out := append([]byte{}, ob...)
+    out = append(out, flags)
+    if m.HasLocal {
+        lb, err := m.Local.MarshalBinary()
+        if err != nil {
+            return nil, err
+        }
+        out = append(out, lb...)
+    }
+    return out, nil
+}
+
+type GetPeerEndpointsReq struct{}
+
+func (GetPeerEndpointsReq) Type() MessageType                     { return TypeGetPeerEndpointsReq }
+func (GetPeerEndpointsReq) MarshalBinaryPayload() ([]byte, error) { return nil, nil }
+
+// PeerEndpoint describes a peer's observed and optional local address.
+type PeerEndpoint struct {
+    PeerID  uint32
+    Flags   uint8 // bit0: HasLocal
+    Observed Address
+    Local    Address // valid only if Flags&1
+}
+
+func (ep PeerEndpoint) MarshalBinary() ([]byte, error) {
+    var out []byte
+    var idb [4]byte
+    idb[0] = byte(ep.PeerID >> 24)
+    idb[1] = byte(ep.PeerID >> 16)
+    idb[2] = byte(ep.PeerID >> 8)
+    idb[3] = byte(ep.PeerID)
+    out = append(out, idb[:]...)
+    out = append(out, ep.Flags)
+    ob, err := ep.Observed.MarshalBinary()
+    if err != nil {
+        return nil, err
+    }
+    out = append(out, ob...)
+    if ep.Flags&0x01 != 0 {
+        lb, err := ep.Local.MarshalBinary()
+        if err != nil {
+            return nil, err
+        }
+        out = append(out, lb...)
+    }
+    return out, nil
+}
+
+func unmarshalPeerEndpoint(p []byte) (PeerEndpoint, int, error) {
+    var ep PeerEndpoint
+    if len(p) < 5 {
+        return ep, 0, io.ErrUnexpectedEOF
+    }
+    ep.PeerID = binary.BigEndian.Uint32(p[:4])
+    ep.Flags = p[4]
+    off := 5
+    var obs Address
+    n, err := obs.UnmarshalBinary(p[off:])
+    if err != nil {
+        return ep, 0, err
+    }
+    ep.Observed = obs
+    off += n
+    if ep.Flags&0x01 != 0 {
+        var loc Address
+        n2, err := loc.UnmarshalBinary(p[off:])
+        if err != nil {
+            return ep, 0, err
+        }
+        ep.Local = loc
+        off += n2
+    }
+    return ep, off, nil
+}
+
+type PeerEndpointsResp struct {
+    Entries []PeerEndpoint
+}
+
+func (PeerEndpointsResp) Type() MessageType { return TypePeerEndpointsResp }
+func (m PeerEndpointsResp) MarshalBinaryPayload() ([]byte, error) {
+    if len(m.Entries) > 0xFFFF {
+        return nil, errors.New("too many endpoints")
+    }
+    out := make([]byte, 2)
+    binary.BigEndian.PutUint16(out[:2], uint16(len(m.Entries)))
+    for _, e := range m.Entries {
+        b, err := e.MarshalBinary()
+        if err != nil {
+            return nil, err
+        }
+        out = append(out, b...)
+    }
+    return out, nil
+}
+
+type NewPeerEndpointNotif struct {
+    Entry PeerEndpoint
+}
+
+func (NewPeerEndpointNotif) Type() MessageType { return TypeNewPeerEndpointNotif }
+func (m NewPeerEndpointNotif) MarshalBinaryPayload() ([]byte, error) {
+    return m.Entry.MarshalBinary()
 }
