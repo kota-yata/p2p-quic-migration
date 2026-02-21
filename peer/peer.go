@@ -4,14 +4,18 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"os"
 	"strconv"
 	"time"
 
 	network_monitor "github.com/kota-yata/p2p-quic-migration/peer/network"
 	proto "github.com/kota-yata/p2p-quic-migration/shared/cmp9protocol"
+	"github.com/quic-go/qlog"
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/logging"
 )
 
 type ServerConfig struct {
@@ -162,6 +166,15 @@ func (p *Peer) setupTLS() error {
 		KeepAlivePeriod: 30 * time.Second,
 		MaxIdleTimeout:  5 * time.Minute,
 	}
+
+	// Enable qlog tracing: one file per connection, hex-encoded CID
+	p.quicConfig.Tracer = qlog.NewTracer(func(cid logging.ConnectionID) io.WriteCloser {
+		f, err := os.Create(fmt.Sprintf("qlog-peer-%x.sqlog", cid))
+		if err != nil {
+			return nil
+		}
+		return f
+	})
 
 	return nil
 }

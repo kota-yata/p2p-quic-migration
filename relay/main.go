@@ -8,10 +8,13 @@ import (
     "io"
     "log"
     "net"
+    "os"
     "time"
 
     proto "github.com/kota-yata/p2p-quic-migration/shared/cmp9protocol"
     "github.com/quic-go/quic-go"
+    "github.com/quic-go/quic-go/logging"
+    "github.com/quic-go/qlog"
 )
 
 var registry *PeerRegistry
@@ -38,6 +41,13 @@ func main() {
         KeepAlivePeriod: 30 * time.Second,
         MaxIdleTimeout:  1 * time.Minute,
     }
+
+    // Enable qlog tracing for relay connections
+    quicConf.Tracer = qlog.NewTracer(func(cid logging.ConnectionID) io.WriteCloser {
+        f, err := os.Create(fmt.Sprintf("qlog-relay-%x.sqlog", cid))
+        if err != nil { return nil }
+        return f
+    })
 
 	ln, err := quic.ListenAddr(*addr, tlsConf, quicConf)
 	if err != nil {

@@ -5,15 +5,19 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/kota-yata/p2p-quic-migration/shared"
 	proto "github.com/kota-yata/p2p-quic-migration/shared/cmp9protocol"
+	"github.com/quic-go/qlog"
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/logging"
 )
 
 type PeerRegistry struct {
@@ -211,6 +215,14 @@ func main() {
 	}
 
 	quicConf := &quic.Config{}
+	// Enable qlog tracing for server-side connections
+	quicConf.Tracer = qlog.NewTracer(func(cid logging.ConnectionID) io.WriteCloser {
+		f, err := os.Create(fmt.Sprintf("qlog-intermediate-%x.sqlog", cid))
+		if err != nil {
+			return nil
+		}
+		return f
+	})
 
 	ln, err := quic.ListenAddr(*addr, tlsConf, quicConf)
 	if err != nil {
