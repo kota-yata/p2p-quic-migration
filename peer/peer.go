@@ -115,12 +115,6 @@ func (p *Peer) Run() error {
 	defer intermediateConn.CloseWithError(0, "")
 	p.intermediateConn = intermediateConn
 
-    // Relay is integrated into the intermediate server; no separate relay connection
-
-	if err := p.sendRelayAllowlistUpdate(); err != nil {
-		log.Printf("warning: failed to send initial relay allowlist: %v", err)
-	}
-
     // init peer discovery and handling
     p.endpoints = make(map[uint32]endpointInfo)
     stream, err := intermediateConn.OpenStreamSync(context.Background())

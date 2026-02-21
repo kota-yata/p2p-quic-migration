@@ -37,9 +37,6 @@ func ConnectToServer(serverAddr string, tlsConfig *tls.Config, quicConfig *quic.
 	return conn, nil
 }
 
-// Relay role is handled by the intermediate server; no separate dial helper.
-
-// IntermediateControlReadLoop handles the v2 flow: ObservedAddr -> SelfAddrsSet -> GetPeerEndpointsReq
 func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) {
     // Expect ObservedAddr first
     msg, err := proto.ReadMessage(stream)
