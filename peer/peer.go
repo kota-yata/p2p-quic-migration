@@ -23,18 +23,20 @@ type ServerConfig struct {
 }
 
 type Peer struct {
-	config             *ServerConfig
-	tlsConfig          *tls.Config
-	quicConfig         *quic.Config
-	transport          *quic.Transport
-	udpConn            *net.UDPConn
-	intermediateConn   *quic.Conn
-	intermediateStream *quic.Stream
-	relayConn          *quic.Conn
-	relayAllowStream   *quic.Stream
-	networkMonitor     *network_monitor.NetworkMonitor
-	knownPeers         map[uint32]string
-	audioRelayStop     func()
+	config                *ServerConfig
+	tlsConfig             *tls.Config
+	quicConfig            *quic.Config
+	intermediateTransport *quic.Transport
+	intermediateUdpConn   *net.UDPConn
+	intermediateConn      *quic.Conn
+	intermediateStream    *quic.Stream
+	relayTransport        *quic.Transport
+	relayUdpConn          *net.UDPConn
+	relayConn             *quic.Conn
+	relayAllowStream      *quic.Stream
+	networkMonitor        *network_monitor.NetworkMonitor
+	knownPeers            map[uint32]string
+	audioRelayStop        func()
 	// hole punch cancellation management
 	hpCancels []context.CancelFunc
 }
@@ -107,7 +109,7 @@ func (p *Peer) Run() error {
 	defer p.cleanup()
 
 	// Connect to the intermediate (signaling) server
-	intermediateConn, err := ConnectToServer(p.config.serverAddr, p.tlsConfig, p.quicConfig, p.transport)
+	intermediateConn, err := ConnectToServer(p.config.serverAddr, p.tlsConfig, p.quicConfig, p.intermediateTransport)
 	if err != nil {
 		return fmt.Errorf("failed to connect to intermediate server: %v", err)
 	}
@@ -115,7 +117,7 @@ func (p *Peer) Run() error {
 	p.intermediateConn = intermediateConn
 
 	// Connect to the relay server
-	relayConn, err := ConnectToServer(p.config.relayAddr, p.tlsConfig, p.quicConfig, p.transport)
+	relayConn, err := ConnectToServer(p.config.relayAddr, p.tlsConfig, p.quicConfig, p.relayTransport)
 	if err != nil {
 		return fmt.Errorf("failed to connect to relay server: %v", err)
 	}
@@ -172,13 +174,20 @@ func (p *Peer) setupTransport() error {
 	}
 
 	log.Printf("Binding UDP transport to local address: %s", currentAddr.String())
-	p.udpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: peerPort, IP: net.IPv4zero})
+	p.intermediateUdpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: peerPort, IP: net.IPv4zero})
 	if err != nil {
-		return fmt.Errorf("failed to listen on UDP: %v", err)
+		return fmt.Errorf("failed to listen on UDP for intermediate: %v", err)
+	}
+	p.relayUdpConn, err = net.ListenUDP("udp4", &net.UDPAddr{Port: 0, IP: net.IPv4zero})
+	if err != nil {
+		return fmt.Errorf("failed to listen on UDP for relay: %v", err)
 	}
 
-	p.transport = &quic.Transport{
-		Conn: p.udpConn,
+	p.intermediateTransport = &quic.Transport{
+		Conn: p.intermediateUdpConn,
+	}
+	p.relayTransport = &quic.Transport{
+		Conn: p.relayUdpConn,
 	}
 
 	return nil
@@ -186,11 +195,17 @@ func (p *Peer) setupTransport() error {
 
 func (p *Peer) cleanup() {
 	log.Printf("Cleaning up resources...")
-	if p.transport != nil {
-		p.transport.Close()
+	if p.intermediateTransport != nil {
+		p.intermediateTransport.Close()
 	}
-	if p.udpConn != nil {
-		p.udpConn.Close()
+	if p.relayTransport != nil {
+		p.relayTransport.Close()
+	}
+	if p.relayUdpConn != nil {
+		p.relayUdpConn.Close()
+	}
+	if p.intermediateUdpConn != nil {
+		p.intermediateUdpConn.Close()
 	}
 	if p.intermediateConn != nil {
 		p.intermediateConn.CloseWithError(0, "")
@@ -201,7 +216,7 @@ func (p *Peer) cleanup() {
 }
 
 func (p *Peer) runPeerListener() error {
-	ln, err := p.transport.Listen(p.tlsConfig, p.quicConfig)
+	ln, err := p.intermediateTransport.Listen(p.tlsConfig, p.quicConfig)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %v", err)
 	}
@@ -214,7 +229,7 @@ func (p *Peer) runPeerListener() error {
 		if err != nil {
 			log.Printf("Accept error possibly due to connection migration: %v", err)
 			// try to re-listen on the new transport
-			ln, err = p.transport.Listen(p.tlsConfig, p.quicConfig)
+			ln, err = p.intermediateTransport.Listen(p.tlsConfig, p.quicConfig)
 			if err != nil {
 				return fmt.Errorf("failed to re-listen after accept error: %v", err)
 			}
@@ -270,7 +285,7 @@ func (p *Peer) startHolePunching(peerAddr string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	// record cancel so an acceptor success can stop dial attempts
 	p.hpCancels = append(p.hpCancels, cancel)
-	go attemptNATHolePunch(ctx, p.transport, peerAddr, p.tlsConfig, p.quicConfig, connectionEstablished)
+	go attemptNATHolePunch(ctx, p.intermediateTransport, peerAddr, p.tlsConfig, p.quicConfig, connectionEstablished)
 }
 
 func (p *Peer) StopAudioRelay() {
@@ -318,7 +333,7 @@ func (p *Peer) StartHolePunchingToAllPeers() {
 		log.Printf("Server starting hole punch to peer %d at %s", peerID, addr)
 		ctx, cancel := context.WithCancel(context.Background())
 		p.hpCancels = append(p.hpCancels, cancel)
-		go attemptNATHolePunch(ctx, p.transport, addr, p.tlsConfig, p.quicConfig, connectionEstablished)
+		go attemptNATHolePunch(ctx, p.intermediateTransport, addr, p.tlsConfig, p.quicConfig, connectionEstablished)
 	}
 }
 
@@ -405,7 +420,8 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 
 	// Bind to an ephemeral port on the new address to avoid reusing the
 	// original fixed port, which can confuse NATs after interface changes.
-	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: newAddr, Port: 0})
+	// Force IPv4 UDP to avoid AF mismatch issues during migration
+	newUDPConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: newAddr, Port: 0})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection: %v", err)
 	}
@@ -441,8 +457,8 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 	}
 
 	// Update the server's transport and UDP connection used for outgoing connections
-	p.transport = newTransport
-	p.udpConn = newUDPConn
+	p.intermediateTransport = newTransport
+	p.intermediateUdpConn = newUDPConn
 
 	return nil
 }
@@ -454,9 +470,15 @@ func (p *Peer) migrateRelayConnection(newAddr net.IP) error {
 	if p.relayConn.Context().Err() != nil {
 		return fmt.Errorf("relay connection is closed, cannot migrate")
 	}
-	// Use current transport (already updated by migrateIntermediateConnection) to add a path
-	path, err := p.relayConn.AddPath(p.transport)
+	// Create a dedicated UDP socket and transport for the relay path
+	newUDPConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: newAddr, Port: 0})
 	if err != nil {
+		return fmt.Errorf("failed to create new UDP connection for relay: %v", err)
+	}
+	newTransport := &quic.Transport{Conn: newUDPConn}
+	path, err := p.relayConn.AddPath(newTransport)
+	if err != nil {
+		newUDPConn.Close()
 		return fmt.Errorf("failed to add new path to relay: %v", err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -464,12 +486,17 @@ func (p *Peer) migrateRelayConnection(newAddr net.IP) error {
 	log.Printf("Probing new path from %s to relay server", newAddr)
 	if err := path.Probe(ctx); err != nil {
 		_ = path.Close()
+		newUDPConn.Close()
 		return fmt.Errorf("failed to probe new relay path: %v", err)
 	}
 	if err := path.Switch(); err != nil {
 		_ = path.Close()
+		newUDPConn.Close()
 		return fmt.Errorf("failed to switch to new relay path: %v", err)
 	}
+	p.relayTransport = newTransport
+	p.relayUdpConn = newUDPConn
+
 	return nil
 }
 
@@ -508,7 +535,6 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 }
 
 // acceptIntermediateStreams accepts additional audio streams initiated by the
-// intermediate server and plays them immediately.
 func (p *Peer) acceptRelayStreams() {
 	if p.relayConn == nil {
 		return

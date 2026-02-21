@@ -63,11 +63,11 @@ Notes
       - `Address`: Address (AF + IP + Port)
   - Semantics: Replaces the relay allow‑list for the sending peer. The Relay MUST forward only packets/streams originating from source addresses present in this list and MUST discard others. Send at initial relay connection establishment; resend whenever the counterparty's address changes.
 
-## Audio Relay Stream (Media)
+## Audio Relay Stream
 - After sending 0x06 on a fresh stream, the remainder of that stream is raw audio data (codec/format negotiated out‑of‑band for now; current implementation uses MP3 frames). No additional control framing is applied to media bytes.
 - The target peer receives a corresponding inbound stream carrying those raw audio bytes.
 
-## Flow Summary (mapping from current behavior)
+## Flow Summary
 - Peer discovery
   - Peer → Server: 0x01 GET_PEERS_REQ
   - Server → Peer: 0x02 PEER_LIST_RESP (list)
@@ -94,8 +94,3 @@ Notes
 - `PeerID` is 4 bytes to keep lookups compact while supporting large fan‑out.
 - `PEER_LIST_RESP` scales as 4+7/19 bytes per entry; if the list would exceed 65535 payload bytes, the server may split across multiple 0x02 messages on the same stream.
  - `RELAY_ALLOWLIST_SET` supports up to 255 addresses per message (1‑byte count). Multiple messages may be sent to overwrite with a new set.
-
-## Compatibility Notes
-- This spec replaces string commands ("GET_PEERS", "NETWORK_CHANGE|…", "AUDIO_RELAY|…") and JSON notifications with the above binary framing.
-- The control stream used to send 0x01 is reused by the server to push 0x02/0x03/0x05.
-- No explicit ACKs are defined; errors SHOULD be signaled by closing the stream/connection with an application error.
