@@ -417,10 +417,7 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		return fmt.Errorf("connection is already closed, cannot migrate")
 	}
 
-	// Bind to an ephemeral port on the new address to avoid reusing the
-	// original fixed port, which can confuse NATs after interface changes.
-	// Force IPv4 UDP to avoid AF mismatch issues during migration
-	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: newAddr, Port: 1357})
+	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection: %v", err)
 	}
@@ -438,7 +435,7 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	log.Printf("Probing new path from %s to intermediate server", newAddr)
+	log.Printf("Probing new path to intermediate server (local %s)", newUDPConn.LocalAddr().String())
 	if err := path.Probe(ctx); err != nil {
 		newUDPConn.Close()
 		return fmt.Errorf("failed to probe new path: %v", err)
@@ -469,8 +466,8 @@ func (p *Peer) migrateRelayConnection(newAddr net.IP) error {
 	if p.relayConn.Context().Err() != nil {
 		return fmt.Errorf("relay connection is closed, cannot migrate")
 	}
-	// Create a dedicated UDP socket and transport for the relay path
-	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: newAddr, Port: 1452})
+
+	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection for relay: %v", err)
 	}
@@ -482,7 +479,7 @@ func (p *Peer) migrateRelayConnection(newAddr net.IP) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	log.Printf("Probing new path from %s to relay server", newAddr)
+	log.Printf("Probing new path to relay server (local %s)", newUDPConn.LocalAddr().String())
 	if err := path.Probe(ctx); err != nil {
 		_ = path.Close()
 		newUDPConn.Close()
