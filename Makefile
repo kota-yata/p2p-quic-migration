@@ -1,5 +1,5 @@
 SERVER_ADDR ?= 0.0.0.0:1234
-INTERMEDIATE_ADDR ?= 162.43.47.102:12345
+SIGNALING_ADDR ?= 203.178.143.72:12345
 CERT_FILE ?= server.crt
 KEY_FILE ?= server.key
 ROLE ?= both
@@ -16,7 +16,7 @@ SND_IF_WIFI ?= eth0
 .PHONY: peer ps pr exp intermediate clean deps cert
 
 peer: deps cert
-	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -serverAddr "$(INTERMEDIATE_ADDR)" -role "$(ROLE)"
+	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -serverAddr "$(SIGNALING_ADDR)" -role "$(ROLE)"
 
 ps: deps cert
 	$(MAKE) peer ROLE=sender
@@ -75,7 +75,7 @@ address-detection:
 	cd peer/cmd && go run network_monitor_standalone.go
 
 cm-test:
-	cd peer/cmd && go run connection_migration.go -cert ../../$(CERT_FILE) -key ../../$(KEY_FILE) -serverAddr "$(INTERMEDIATE_ADDR)"
+	cd peer/cmd && go run connection_migration.go -cert ../../$(CERT_FILE) -key ../../$(KEY_FILE) -serverAddr "$(SIGNALING_ADDR)"
 
 intermediate: deps cert
 	cd intermediate && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
