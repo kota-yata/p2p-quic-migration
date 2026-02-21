@@ -1,4 +1,4 @@
-Cmp9 defines compact binary control messages exchanged between Peer and Intermediate Server, plus a raw audio relay stream. This replaces the current ad‑hoc string/JSON messages.
+Cmp9 defines compact binary control messages exchanged between Peer and Intermediate Server, and between Peer and Relay Server, plus a raw audio relay stream.
 
 ## Message Framing
 - Header:
@@ -51,10 +51,17 @@ Notes
     - `NewAddress`: Address (server‑observed)
   - Semantics: Broadcast on the notification stream to all other peers.
 
-- 0x06 AUDIO_RELAY_REQ (peer → server) [first frame on a fresh stream]
+- 0x06 AUDIO_RELAY_REQ (peer → relay) [first frame on a fresh stream]
   - Payload:
     - `TargetPeerID`: 4 bytes
-  - Semantics: On a newly opened QUIC stream, the peer sends this one control message. After the `AUDIO_RELAY_REQ` header+payload, the peer immediately sends raw audio bytes on the same stream. The server relays these bytes to the target peer over another stream it opens toward the target.
+  - Semantics: On a newly opened QUIC stream to the Relay, the peer sends this one control message. After the `AUDIO_RELAY_REQ` header+payload, the peer immediately sends raw audio bytes on the same stream. The Relay forwards these bytes to the target peer over another stream it opens toward the target.
+
+- 0x07 RELAY_ALLOWLIST_SET (peer → relay)
+  - Payload:
+    - `Count`: 1 byte (`uint8`)
+    - Repeated `Count` times:
+      - `Address`: Address (AF + IP + Port)
+  - Semantics: Replaces the relay allow‑list for the sending peer. The Relay MUST forward only packets/streams originating from source addresses present in this list and MUST discard others. Send at initial relay connection establishment; resend whenever the counterparty's address changes.
 
 ## Audio Relay Stream (Media)
 - After sending 0x06 on a fresh stream, the remainder of that stream is raw audio data (codec/format negotiated out‑of‑band for now; current implementation uses MP3 frames). No additional control framing is applied to media bytes.
@@ -69,15 +76,24 @@ Notes
   - Peer → Server: 0x04 NETWORK_CHANGE_REQ (old address only)
   - Server → Peers: 0x05 NETWORK_CHANGE_NOTIF (peerID, old/new)
 - Audio relay
-  - Peer opens new stream
-  - Peer → Server: 0x06 AUDIO_RELAY_REQ on that stream
+  - Initial setup: Peer sets allow‑list at Relay: 0x07 RELAY_ALLOWLIST_SET (e.g., allow the counterparty’s address)
+  - Peer opens new stream to Relay
+  - Peer → Relay: 0x06 AUDIO_RELAY_REQ on that stream
   - Then raw audio bytes on same stream until close
+  - On counterparty address change (received via 0x05 from intermediate): Peer immediately sends updated 0x07 RELAY_ALLOWLIST_SET to the Relay to reflect the new allowed source address.
+
+## Relay Enforcement Rules
+- Default‑deny: If no allow list is present, the Relay MUST drop all forwarding attempts.
+- Replace semantics: Each `RELAY_ALLOWLIST_SET` fully replaces the previous list for that peer connection.
+- Scope: The allow list is scoped to the authenticated QUIC connection of the sending peer.
+- Matching: Relay MUST match the observed source address of inbound traffic it would forward against the allow list (Address struct match: AF + IP + Port). Non‑matching traffic MUST be discarded.
 
 ## Size Considerations
 - Header is 3 bytes flat.
 - IPv4 `Address` is 7 bytes; IPv6 is 19 bytes.
 - `PeerID` is 4 bytes to keep lookups compact while supporting large fan‑out.
 - `PEER_LIST_RESP` scales as 4+7/19 bytes per entry; if the list would exceed 65535 payload bytes, the server may split across multiple 0x02 messages on the same stream.
+ - `RELAY_ALLOWLIST_SET` supports up to 255 addresses per message (1‑byte count). Multiple messages may be sent to overwrite with a new set.
 
 ## Compatibility Notes
 - This spec replaces string commands ("GET_PEERS", "NETWORK_CHANGE|…", "AUDIO_RELAY|…") and JSON notifications with the above binary framing.

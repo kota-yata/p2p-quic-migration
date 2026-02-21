@@ -37,6 +37,11 @@ func ConnectToServer(serverAddr string, tlsConfig *tls.Config, quicConfig *quic.
 	return conn, nil
 }
 
+// ConnectToRelay dials the relay server. Alias to ConnectToServer for now.
+func ConnectToRelay(relayAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, transport *quic.Transport) (*quic.Conn, error) {
+	return ConnectToServer(relayAddr, tlsConfig, quicConfig, transport)
+}
+
 // IntermediateControlReadLoop exchanges peer info and handles ongoing notifications.
 func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) {
 	if err := sendPeerRequest(stream); err != nil {

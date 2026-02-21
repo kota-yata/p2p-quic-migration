@@ -27,16 +27,6 @@ type PeerRegistry struct {
 	connIndex map[string]uint32
 	// control stream for notifications by peer ID
 	notificationStreams map[uint32]*quic.Stream
-	audioRelays         map[string]*AudioRelaySession
-}
-
-// AudioRelaySession represents an active audio relay between two peers
-type AudioRelaySession struct {
-	sourcePeerID uint32
-	targetPeerID uint32
-	sourceStream *quic.Stream
-	targetStream *quic.Stream
-	stopChan     chan bool
 }
 
 func NewPeerRegistry() *PeerRegistry {
@@ -46,7 +36,6 @@ func NewPeerRegistry() *PeerRegistry {
 		connections:         make(map[uint32]*quic.Conn),
 		connIndex:           make(map[string]uint32),
 		notificationStreams: make(map[uint32]*quic.Stream),
-		audioRelays:         make(map[string]*AudioRelaySession),
 	}
 }
 
@@ -171,81 +160,6 @@ func (pr *PeerRegistry) handleNetworkChange(req proto.NetworkChangeReq, peerID u
 	pr.notifyPeersAboutNetworkChange(peerID, oldAddrStr, observedAddr)
 }
 
-func (pr *PeerRegistry) handleAudioRelay(targetPeerID uint32, sourcePeerID uint32, sourceStream *quic.Stream) {
-	log.Printf("Setting up audio relay from %d to %d", sourcePeerID, targetPeerID)
-
-	pr.mu.Lock()
-	defer pr.mu.Unlock()
-
-	targetConn, exists := pr.connections[targetPeerID]
-	if !exists {
-		log.Printf("Target peer %d not found for audio relay", targetPeerID)
-		return
-	}
-
-	targetStream, err := targetConn.OpenStreamSync(context.Background())
-	if err != nil {
-		log.Printf("Failed to open stream to target peer %d: %v", targetPeerID, err)
-		return
-	}
-
-	relayID := fmt.Sprintf("%d->%d", sourcePeerID, targetPeerID)
-	relay := &AudioRelaySession{
-		sourcePeerID: sourcePeerID,
-		targetPeerID: targetPeerID,
-		sourceStream: sourceStream,
-		targetStream: targetStream,
-		stopChan:     make(chan bool, 1),
-	}
-
-	pr.audioRelays[relayID] = relay
-
-	go relay.StartRelay()
-
-	log.Printf("Audio relay session started: %s", relayID)
-}
-
-func (ars *AudioRelaySession) StartRelay() {
-	defer func() {
-		ars.targetStream.Close()
-		log.Printf("Audio relay session ended: %d->%d", ars.sourcePeerID, ars.targetPeerID)
-	}()
-
-	buffer := make([]byte, 4096)
-	totalRelayed := int64(0)
-
-	for {
-		select {
-		case <-ars.stopChan:
-			return
-		default:
-			n, err := ars.sourceStream.Read(buffer)
-			if err != nil {
-				if err.Error() == "EOF" {
-					log.Printf("Audio relay source stream ended. Total relayed: %d bytes", totalRelayed)
-				} else {
-					log.Printf("Audio relay read error: %v", err)
-				}
-				return
-			}
-
-			if n > 0 {
-				written, err := ars.targetStream.Write(buffer[:n])
-				if err != nil {
-					log.Printf("Audio relay write error: %v", err)
-					return
-				}
-
-				totalRelayed += int64(written)
-
-				if totalRelayed%262144 == 0 {
-					log.Printf("Audio relay progress: %d bytes relayed", totalRelayed)
-				}
-			}
-		}
-	}
-}
-
 func (pr *PeerRegistry) notifyPeersAboutNetworkChange(changedPeerID uint32, oldAddr, newAddr string) {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
@@ -341,10 +255,6 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID uint32) {
 	defer stream.Close()
 
 	registry.UpdateLastSeen(peerID)
-
-	// Read framed messages until EOF for control streams.
-	// If the first message is AUDIO_RELAY_REQ, hand over to relay logic and return.
-	first := true
 	for {
 		msg, err := proto.ReadMessage(stream)
 		if err != nil {
@@ -358,12 +268,7 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID uint32) {
 
 		switch m := msg.(type) {
 		case proto.AudioRelayReq:
-			// Only valid as first frame on a fresh stream
-			if !first {
-				log.Printf("AUDIO_RELAY_REQ received not as first frame; closing stream")
-				return
-			}
-			registry.handleAudioRelay(m.TargetPeerID, peerID, stream)
+			log.Printf("Received AUDIO_RELAY_REQ on signaling server; ignoring (relay server handles media)")
 			return
 		case proto.GetPeersReq:
 			// build list excluding self
@@ -393,7 +298,6 @@ func handleStream(stream *quic.Stream, conn *quic.Conn, peerID uint32) {
 		default:
 			log.Printf("Unhandled message type: %T", m)
 		}
-		first = false
 	}
 }
 

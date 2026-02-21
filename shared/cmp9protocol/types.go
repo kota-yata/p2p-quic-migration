@@ -11,12 +11,13 @@ import (
 type MessageType uint8
 
 const (
-	TypeGetPeersReq        MessageType = 0x01
-	TypePeerListResp       MessageType = 0x02
-	TypeNewPeerNotif       MessageType = 0x03
-	TypeNetworkChangeReq   MessageType = 0x04
-	TypeNetworkChangeNotif MessageType = 0x05
-	TypeAudioRelayReq      MessageType = 0x06
+    TypeGetPeersReq        MessageType = 0x01
+    TypePeerListResp       MessageType = 0x02
+    TypeNewPeerNotif       MessageType = 0x03
+    TypeNetworkChangeReq   MessageType = 0x04
+    TypeNetworkChangeNotif MessageType = 0x05
+    TypeAudioRelayReq      MessageType = 0x06
+    TypeRelayAllowlistSet  MessageType = 0x07
 )
 
 // Message is the common interface for all control messages.
@@ -177,14 +178,35 @@ func (m NetworkChangeNotif) MarshalBinaryPayload() ([]byte, error) {
 }
 
 type AudioRelayReq struct {
-	TargetPeerID uint32
+    TargetPeerID uint32
 }
 
 func (AudioRelayReq) Type() MessageType { return TypeAudioRelayReq }
 func (m AudioRelayReq) MarshalBinaryPayload() ([]byte, error) {
-	var tmp [4]byte
-	binary.BigEndian.PutUint32(tmp[:], m.TargetPeerID)
-	return tmp[:], nil
+    var tmp [4]byte
+    binary.BigEndian.PutUint32(tmp[:], m.TargetPeerID)
+    return tmp[:], nil
+}
+
+// RelayAllowlistSet replaces the relay allow list for the sending peer connection.
+type RelayAllowlistSet struct {
+    Addresses []Address // up to 255 entries
+}
+
+func (RelayAllowlistSet) Type() MessageType { return TypeRelayAllowlistSet }
+func (m RelayAllowlistSet) MarshalBinaryPayload() ([]byte, error) {
+    if len(m.Addresses) > 255 {
+        return nil, errors.New("too many addresses for RELAY_ALLOWLIST_SET")
+    }
+    out := []byte{byte(len(m.Addresses))}
+    for _, a := range m.Addresses {
+        ab, err := a.MarshalBinary()
+        if err != nil {
+            return nil, err
+        }
+        out = append(out, ab...)
+    }
+    return out, nil
 }
 
 // WriteMessage writes a single framed message (Type, Length, Payload) to w.
@@ -227,7 +249,7 @@ func ReadMessage(r io.Reader) (Message, error) {
 }
 
 func decodePayload(t MessageType, p []byte) (Message, error) {
-	switch t {
+    switch t {
 	case TypeGetPeersReq:
 		if len(p) != 0 {
 			return nil, errors.New("GET_PEERS_REQ must have empty payload")
@@ -304,13 +326,33 @@ func decodePayload(t MessageType, p []byte) (Message, error) {
 			return nil, errors.New("extra bytes in NETWORK_CHANGE_NOTIF payload")
 		}
 		return NetworkChangeNotif{PeerID: pid, OldAddress: oldA, NewAddress: newA}, nil
-	case TypeAudioRelayReq:
-		if len(p) != 4 {
-			return nil, errors.New("AUDIO_RELAY_REQ payload must be 4 bytes")
-		}
-		pid := binary.BigEndian.Uint32(p[:4])
-		return AudioRelayReq{TargetPeerID: pid}, nil
-	default:
-		return nil, fmt.Errorf("unknown message type: 0x%02x", uint8(t))
-	}
+    case TypeAudioRelayReq:
+        if len(p) != 4 {
+            return nil, errors.New("AUDIO_RELAY_REQ payload must be 4 bytes")
+        }
+        pid := binary.BigEndian.Uint32(p[:4])
+        return AudioRelayReq{TargetPeerID: pid}, nil
+    case TypeRelayAllowlistSet:
+        if len(p) < 1 {
+            return nil, io.ErrUnexpectedEOF
+        }
+        count := int(p[0])
+        off := 1
+        addrs := make([]Address, 0, count)
+        for i := 0; i < count; i++ {
+            var a Address
+            n, err := a.UnmarshalBinary(p[off:])
+            if err != nil {
+                return nil, err
+            }
+            off += n
+            addrs = append(addrs, a)
+        }
+        if off != len(p) {
+            return nil, errors.New("extra bytes in RELAY_ALLOWLIST_SET payload")
+        }
+        return RelayAllowlistSet{Addresses: addrs}, nil
+    default:
+        return nil, fmt.Errorf("unknown message type: 0x%02x", uint8(t))
+    }
 }
