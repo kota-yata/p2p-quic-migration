@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -15,8 +14,6 @@ import (
 
 	network_monitor "github.com/kota-yata/p2p-quic-migration/peer/network"
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/logging"
-	"github.com/quic-go/qlog"
 )
 
 const (
@@ -102,13 +99,6 @@ func (a *app) setupTLS() error {
 		KeepAlivePeriod: 30 * time.Second,
 		MaxIdleTimeout:  5 * time.Minute,
 	}
-
-	// Enable qlog
-	a.quicConfig.Tracer = qlog.NewTracer(func(cid logging.ConnectionID) io.WriteCloser {
-		f, err := os.Create(fmt.Sprintf("qlog-cm-%x.sqlog", cid))
-		if err != nil { return nil }
-		return f
-	})
 	return nil
 }
 

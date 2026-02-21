@@ -1,4 +1,4 @@
-Cmp9 defines compact binary control messages exchanged between Peer and Intermediate Server, and between Peer and Relay Server, plus a raw audio relay stream.
+Cmp9 defines compact binary control messages exchanged between Peer and Server. In this deployment, the Intermediate Server also serves the Relay role; audio relay reuses the same QUIC connection to the server.
 
 ## Message Framing
 - Header:
@@ -51,12 +51,12 @@ Notes
     - `NewAddress`: Address (server‑observed)
   - Semantics: Broadcast on the notification stream to all other peers.
 
-- 0x06 AUDIO_RELAY_REQ (peer → relay) [first frame on a fresh stream]
+- 0x06 AUDIO_RELAY_REQ (peer → server, relay role) [first frame on a fresh stream]
   - Payload:
     - `TargetPeerID`: 4 bytes
   - Semantics: On a newly opened QUIC stream to the Relay, the peer sends this one control message. After the `AUDIO_RELAY_REQ` header+payload, the peer immediately sends raw audio bytes on the same stream. The Relay forwards these bytes to the target peer over another stream it opens toward the target.
 
-- 0x07 RELAY_ALLOWLIST_SET (peer → relay)
+- 0x07 RELAY_ALLOWLIST_SET (peer → server, relay role)
   - Payload:
     - `Count`: 1 byte (`uint8`)
     - Repeated `Count` times:
@@ -76,9 +76,9 @@ Notes
   - Peer → Server: 0x04 NETWORK_CHANGE_REQ (old address only)
   - Server → Peers: 0x05 NETWORK_CHANGE_NOTIF (peerID, old/new)
 - Audio relay
-  - Initial setup: Peer sets allow‑list at Relay: 0x07 RELAY_ALLOWLIST_SET (e.g., allow the counterparty’s address)
-  - Peer opens new stream to Relay
-  - Peer → Relay: 0x06 AUDIO_RELAY_REQ on that stream
+  - Initial setup: Peer sets allow‑list at the server (relay role): 0x07 RELAY_ALLOWLIST_SET (e.g., allow the counterparty’s address)
+  - Peer opens a new stream to the same server connection
+  - Peer → Server (relay role): 0x06 AUDIO_RELAY_REQ on that stream
   - Then raw audio bytes on same stream until close
   - On counterparty address change (received via 0x05 from intermediate): Peer immediately sends updated 0x07 RELAY_ALLOWLIST_SET to the Relay to reflect the new allowed source address.
 

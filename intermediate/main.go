@@ -8,39 +8,39 @@ import (
 	"io"
 	"log"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/kota-yata/p2p-quic-migration/shared"
 	proto "github.com/kota-yata/p2p-quic-migration/shared/cmp9protocol"
-	"github.com/quic-go/qlog"
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/logging"
 )
 
 type PeerRegistry struct {
-	mu     sync.RWMutex
-	nextID uint32
-	// peer information, keyed by uint32 ID
-	peers map[uint32]*shared.PeerInfo
-	// connection by peer ID
-	connections map[uint32]*quic.Conn
-	// reverse lookup: connection remote addr string -> peer ID
-	connIndex map[string]uint32
-	// control stream for notifications by peer ID
-	notificationStreams map[uint32]*quic.Stream
+    mu     sync.RWMutex
+    nextID uint32
+    // peer information, keyed by uint32 ID
+    peers map[uint32]*shared.PeerInfo
+    // connection by peer ID
+    connections map[uint32]*quic.Conn
+    // reverse lookup: connection remote addr string -> peer ID
+    connIndex map[string]uint32
+    // control stream for notifications by peer ID
+    notificationStreams map[uint32]*quic.Stream
+    // relay allow list per peer (string host:port entries)
+    relayAllowList map[uint32][]string
 }
 
 func NewPeerRegistry() *PeerRegistry {
-	return &PeerRegistry{
-		nextID:              1,
-		peers:               make(map[uint32]*shared.PeerInfo),
-		connections:         make(map[uint32]*quic.Conn),
-		connIndex:           make(map[string]uint32),
-		notificationStreams: make(map[uint32]*quic.Stream),
-	}
+    return &PeerRegistry{
+        nextID:              1,
+        peers:               make(map[uint32]*shared.PeerInfo),
+        connections:         make(map[uint32]*quic.Conn),
+        connIndex:           make(map[string]uint32),
+        notificationStreams: make(map[uint32]*quic.Stream),
+        relayAllowList:      make(map[uint32][]string),
+    }
 }
 
 func (pr *PeerRegistry) AddPeer(addr net.Addr, conn *quic.Conn) uint32 {
@@ -66,25 +66,28 @@ func (pr *PeerRegistry) AddPeer(addr net.Addr, conn *quic.Conn) uint32 {
 }
 
 func (pr *PeerRegistry) RemovePeer(id uint32) {
-	pr.mu.Lock()
-	defer pr.mu.Unlock()
+    pr.mu.Lock()
+    defer pr.mu.Unlock()
 
 	if _, exists := pr.peers[id]; exists {
 		delete(pr.peers, id)
 		delete(pr.connections, id)
-		if stream, exists := pr.notificationStreams[id]; exists {
-			stream.Close()
-			delete(pr.notificationStreams, id)
-		}
-		// remove from reverse index if present
-		for k, v := range pr.connIndex {
-			if v == id {
-				delete(pr.connIndex, k)
-				break
-			}
-		}
-		log.Printf("Removed peer %s", id)
-	}
+        if stream, exists := pr.notificationStreams[id]; exists {
+            stream.Close()
+            delete(pr.notificationStreams, id)
+        }
+        if _, ok := pr.relayAllowList[id]; ok {
+            delete(pr.relayAllowList, id)
+        }
+        // remove from reverse index if present
+        for k, v := range pr.connIndex {
+            if v == id {
+                delete(pr.connIndex, k)
+                break
+            }
+        }
+        log.Printf("Removed peer %s", id)
+    }
 }
 
 func (pr *PeerRegistry) UpdateLastSeen(id uint32) {
@@ -194,6 +197,29 @@ func (pr *PeerRegistry) notifyPeersAboutNetworkChange(changedPeerID uint32, oldA
 	}
 }
 
+// SetRelayAllowList replaces the relay allow list for a given peer.
+func (pr *PeerRegistry) SetRelayAllowList(peerID uint32, allow []string) {
+    pr.mu.Lock()
+    defer pr.mu.Unlock()
+    pr.relayAllowList[peerID] = append([]string(nil), allow...)
+}
+
+// FindTargetByAllowedSource finds a connection whose allow list contains the given source address string.
+func (pr *PeerRegistry) FindTargetByAllowedSource(sourceAddr string) (*quic.Conn, uint32, bool) {
+    pr.mu.RLock()
+    defer pr.mu.RUnlock()
+    for id, list := range pr.relayAllowList {
+        for _, v := range list {
+            if v == sourceAddr {
+                if c, ok := pr.connections[id]; ok {
+                    return c, id, true
+                }
+            }
+        }
+    }
+    return nil, 0, false
+}
+
 var registry *PeerRegistry
 
 func main() {
@@ -215,14 +241,6 @@ func main() {
 	}
 
 	quicConf := &quic.Config{}
-	// Enable qlog tracing for server-side connections
-	quicConf.Tracer = qlog.NewTracer(func(cid logging.ConnectionID) io.WriteCloser {
-		f, err := os.Create(fmt.Sprintf("qlog-intermediate-%x.sqlog", cid))
-		if err != nil {
-			return nil
-		}
-		return f
-	})
 
 	ln, err := quic.ListenAddr(*addr, tlsConf, quicConf)
 	if err != nil {
@@ -264,53 +282,148 @@ func handleConnection(conn *quic.Conn) {
 }
 
 func handleStream(stream *quic.Stream, conn *quic.Conn, peerID uint32) {
-	defer stream.Close()
+    defer stream.Close()
 
-	registry.UpdateLastSeen(peerID)
-	for {
-		msg, err := proto.ReadMessage(stream)
-		if err != nil {
-			if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
-				log.Printf("Stream closed by peer %d", peerID)
-			} else {
-				log.Printf("Stream read error: %v", err)
-			}
-			return
-		}
+    registry.UpdateLastSeen(peerID)
 
-		switch m := msg.(type) {
-		case proto.AudioRelayReq:
-			log.Printf("Received AUDIO_RELAY_REQ on signaling server; ignoring (relay server handles media)")
-			return
-		case proto.GetPeersReq:
-			// build list excluding self
-			registry.mu.RLock()
-			entries := make([]proto.PeerEntry, 0, len(registry.peers))
-			for id, info := range registry.peers {
-				if id == peerID {
-					continue
-				}
-				addr, err := parseAddrString(info.Address)
-				if err != nil {
-					continue
-				}
-				entries = append(entries, proto.PeerEntry{PeerID: id, Address: addr})
-			}
-			registry.mu.RUnlock()
-			resp := proto.PeerListResp{Peers: entries}
-			if err := proto.WriteMessage(stream, resp); err != nil {
-				log.Printf("Failed to write peer list resp: %v", err)
-				return
-			}
-			log.Printf("Sent peer list to %s: %d peers (excluding self)", conn.RemoteAddr(), len(entries))
-			registry.AddNotificationStream(peerID, stream)
-			log.Printf("Peer %d registered for notifications on the same stream", peerID)
-		case proto.NetworkChangeReq:
-			registry.handleNetworkChange(m, peerID, conn)
-		default:
-			log.Printf("Unhandled message type: %T", m)
-		}
-	}
+    // Read first message to determine stream intent
+    msg, err := proto.ReadMessage(stream)
+    if err != nil {
+        if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
+            log.Printf("Stream closed by peer %d before first message", peerID)
+        } else {
+            log.Printf("Stream read error (first message): %v", err)
+        }
+        return
+    }
+
+    switch m := msg.(type) {
+    case proto.AudioRelayReq:
+        // Relay: this stream will carry raw audio to be forwarded to the target
+        sourceAddr := conn.RemoteAddr().String()
+        targetConn, targetID, ok := registry.FindTargetByAllowedSource(sourceAddr)
+        if !ok {
+            log.Printf("No target peer found whose allow list permits source %s; dropping relay request", sourceAddr)
+            return
+        }
+        targetStream, err := targetConn.OpenStreamSync(context.Background())
+        if err != nil {
+            log.Printf("Failed to open stream to target %d for %s: %v", targetID, sourceAddr, err)
+            return
+        }
+        defer targetStream.Close()
+
+        buf := make([]byte, 4096)
+        nbytes, err := io.CopyBuffer(targetStream, stream, buf)
+        if err != nil {
+            log.Printf("Relay copy error from %s to %d: %v", sourceAddr, targetID, err)
+            return
+        }
+        log.Printf("Relayed %d bytes from %s to %d", nbytes, sourceAddr, targetID)
+        return
+
+    case proto.RelayAllowlistSet:
+        // Update allow list for this peer and continue accepting updates
+        addrs := make([]string, 0, len(m.Addresses))
+        for _, a := range m.Addresses {
+            addrs = append(addrs, net.JoinHostPort(a.IP.String(), fmt.Sprintf("%d", a.Port)))
+        }
+        registry.SetRelayAllowList(peerID, addrs)
+        log.Printf("Updated allow list for peer %d with %d entries", peerID, len(addrs))
+        // Continue to accept further updates on this stream
+        for {
+            next, err := proto.ReadMessage(stream)
+            if err != nil {
+                if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
+                    return
+                }
+                log.Printf("Error reading allowlist update from %d: %v", peerID, err)
+                return
+            }
+            if upd, ok := next.(proto.RelayAllowlistSet); ok {
+                addrs = addrs[:0]
+                for _, a := range upd.Addresses {
+                    addrs = append(addrs, net.JoinHostPort(a.IP.String(), fmt.Sprintf("%d", a.Port)))
+                }
+                registry.SetRelayAllowList(peerID, addrs)
+                log.Printf("Updated allow list for peer %d with %d entries", peerID, len(addrs))
+            } else {
+                log.Printf("Unexpected message on allowlist stream from %d: %T", peerID, next)
+            }
+        }
+
+    case proto.GetPeersReq:
+        // Original signaling/control stream; keep previous loop behavior
+        // Immediately handle this first request, then register and continue
+        registry.mu.RLock()
+        entries := make([]proto.PeerEntry, 0, len(registry.peers))
+        for id, info := range registry.peers {
+            if id == peerID {
+                continue
+            }
+            addr, err := parseAddrString(info.Address)
+            if err != nil {
+                continue
+            }
+            entries = append(entries, proto.PeerEntry{PeerID: id, Address: addr})
+        }
+        registry.mu.RUnlock()
+        resp := proto.PeerListResp{Peers: entries}
+        if err := proto.WriteMessage(stream, resp); err != nil {
+            log.Printf("Failed to write peer list resp: %v", err)
+            return
+        }
+        log.Printf("Sent peer list to %s: %d peers (excluding self)", conn.RemoteAddr(), len(entries))
+        registry.AddNotificationStream(peerID, stream)
+        log.Printf("Peer %d registered for notifications on the same stream", peerID)
+
+        for {
+            msg, err := proto.ReadMessage(stream)
+            if err != nil {
+                if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
+                    log.Printf("Stream closed by peer %d", peerID)
+                } else {
+                    log.Printf("Stream read error: %v", err)
+                }
+                return
+            }
+            switch m := msg.(type) {
+            case proto.NetworkChangeReq:
+                registry.handleNetworkChange(m, peerID, conn)
+            case proto.GetPeersReq:
+                // respond again if requested
+                registry.mu.RLock()
+                entries = entries[:0]
+                for id, info := range registry.peers {
+                    if id == peerID {
+                        continue
+                    }
+                    addr, err := parseAddrString(info.Address)
+                    if err != nil {
+                        continue
+                    }
+                    entries = append(entries, proto.PeerEntry{PeerID: id, Address: addr})
+                }
+                registry.mu.RUnlock()
+                resp := proto.PeerListResp{Peers: entries}
+                if err := proto.WriteMessage(stream, resp); err != nil {
+                    log.Printf("Failed to write peer list resp: %v", err)
+                    return
+                }
+            default:
+                log.Printf("Unhandled message type on control stream: %T", m)
+            }
+        }
+
+    case proto.NetworkChangeReq:
+        // If a client sends NetworkChangeReq first on a fresh stream, handle and then return
+        registry.handleNetworkChange(m, peerID, conn)
+        return
+
+    default:
+        log.Printf("Unexpected first message on stream from %d: %T", peerID, m)
+        return
+    }
 }
 
 // helper: parse "host:port" into protocol Address

@@ -4,56 +4,48 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"log"
 	"net"
-	"os"
 	"strconv"
 	"time"
 
 	network_monitor "github.com/kota-yata/p2p-quic-migration/peer/network"
 	proto "github.com/kota-yata/p2p-quic-migration/shared/cmp9protocol"
-	"github.com/quic-go/qlog"
 	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/logging"
 )
 
 type ServerConfig struct {
-	keyFile    string
-	certFile   string
-	serverAddr string
-	relayAddr  string
-	role       string
+    keyFile    string
+    certFile   string
+    serverAddr string
+    role       string
 }
 
 type Peer struct {
-	config                *ServerConfig
-	tlsConfig             *tls.Config
-	quicConfig            *quic.Config
-	intermediateTransport *quic.Transport
-	intermediateUdpConn   *net.UDPConn
-	intermediateConn      *quic.Conn
-	intermediateStream    *quic.Stream
-	relayTransport        *quic.Transport
-	relayUdpConn          *net.UDPConn
-	relayConn             *quic.Conn
-	relayAllowStream      *quic.Stream
-	networkMonitor        *network_monitor.NetworkMonitor
-	knownPeers            map[uint32]string
-	audioRelayStop        func()
-	// hole punch cancellation management
-	hpCancels []context.CancelFunc
+    config                *ServerConfig
+    tlsConfig             *tls.Config
+    quicConfig            *quic.Config
+    intermediateTransport *quic.Transport
+    intermediateUdpConn   *net.UDPConn
+    intermediateConn      *quic.Conn
+    intermediateStream    *quic.Stream
+    relayAllowStream      *quic.Stream
+    networkMonitor        *network_monitor.NetworkMonitor
+    knownPeers            map[uint32]string
+    audioRelayStop        func()
+    // hole punch cancellation management
+    hpCancels []context.CancelFunc
 }
 
 // openRelayAllowStream opens (or reopens) the control stream used to send allowlist updates.
 func (p *Peer) openRelayAllowStream() error {
-	if p.relayConn == nil {
-		return fmt.Errorf("no relay connection available")
+	if p.intermediateConn == nil {
+		return fmt.Errorf("no server connection available")
 	}
 	if p.relayAllowStream != nil {
 		return nil
 	}
-	s, err := p.relayConn.OpenStreamSync(context.Background())
+	s, err := p.intermediateConn.OpenStreamSync(context.Background())
 	if err != nil {
 		return err
 	}
@@ -120,13 +112,7 @@ func (p *Peer) Run() error {
 	defer intermediateConn.CloseWithError(0, "")
 	p.intermediateConn = intermediateConn
 
-	// Connect to the relay server
-	relayConn, err := ConnectToServer(p.config.relayAddr, p.tlsConfig, p.quicConfig, p.relayTransport)
-	if err != nil {
-		return fmt.Errorf("failed to connect to relay server: %v", err)
-	}
-	defer relayConn.CloseWithError(0, "")
-	p.relayConn = relayConn
+    // Relay is integrated into the intermediate server; no separate relay connection
 
 	if err := p.sendRelayAllowlistUpdate(); err != nil {
 		log.Printf("warning: failed to send initial relay allowlist: %v", err)
@@ -167,15 +153,6 @@ func (p *Peer) setupTLS() error {
 		MaxIdleTimeout:  5 * time.Minute,
 	}
 
-	// Enable qlog tracing: one file per connection, hex-encoded CID
-	p.quicConfig.Tracer = qlog.NewTracer(func(cid logging.ConnectionID) io.WriteCloser {
-		f, err := os.Create(fmt.Sprintf("qlog-peer-%x.sqlog", cid))
-		if err != nil {
-			return nil
-		}
-		return f
-	})
-
 	return nil
 }
 
@@ -191,17 +168,11 @@ func (p *Peer) setupTransport() error {
 	if err != nil {
 		return fmt.Errorf("failed to listen on UDP for intermediate: %v", err)
 	}
-	p.relayUdpConn, err = net.ListenUDP("udp", &net.UDPAddr{Port: 0, IP: net.IPv4zero})
-	if err != nil {
-		return fmt.Errorf("failed to listen on UDP for relay: %v", err)
-	}
 
 	p.intermediateTransport = &quic.Transport{
 		Conn: p.intermediateUdpConn,
 	}
-	p.relayTransport = &quic.Transport{
-		Conn: p.relayUdpConn,
-	}
+    // No separate relay transport; relay uses intermediate transport
 
 	return nil
 }
@@ -211,12 +182,7 @@ func (p *Peer) cleanup() {
 	if p.intermediateTransport != nil {
 		p.intermediateTransport.Close()
 	}
-	if p.relayTransport != nil {
-		p.relayTransport.Close()
-	}
-	if p.relayUdpConn != nil {
-		p.relayUdpConn.Close()
-	}
+    // No separate relay transport to close
 	if p.intermediateUdpConn != nil {
 		p.intermediateUdpConn.Close()
 	}
@@ -351,14 +317,14 @@ func (p *Peer) StartHolePunchingToAllPeers() {
 }
 
 func (p *Peer) switchToAudioRelay(targetPeerID uint32) error {
-	if p.relayConn == nil {
-		return fmt.Errorf("no relay connection available")
-	}
+    if p.intermediateConn == nil {
+        return fmt.Errorf("no server connection available for relay")
+    }
 
-	stream, err := p.relayConn.OpenStreamSync(context.Background())
-	if err != nil {
-		return fmt.Errorf("failed to open audio relay stream: %v", err)
-	}
+    stream, err := p.intermediateConn.OpenStreamSync(context.Background())
+    if err != nil {
+        return fmt.Errorf("failed to open audio relay stream: %v", err)
+    }
 
 	// Send AUDIO_RELAY_REQ as the first framed message on this fresh stream
 	if err := proto.WriteMessage(stream, proto.AudioRelayReq{TargetPeerID: targetPeerID}); err != nil {
@@ -392,17 +358,10 @@ func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 		return
 	}
 
-	// Migrate relay connection to the new local path as well
-	if err := p.migrateRelayConnection(newAddr); err != nil {
-		log.Printf("Failed to migrate relay connection: %v", err)
-		return
-	}
-	log.Printf("Successfully migrated relay connection to new address: %s", newAddr)
-
-	// Update relay allow list for our peers as our own source address changed from relay's perspective
-	if err := p.sendRelayAllowlistUpdate(); err != nil {
-		log.Printf("Failed to refresh relay allowlist after our migration: %v", err)
-	}
+    // Update relay allow list for our peers as our own source address changed from relay's perspective
+    if err := p.sendRelayAllowlistUpdate(); err != nil {
+        log.Printf("Failed to refresh relay allowlist after our migration: %v", err)
+    }
 }
 
 // monitorHolepunch waits for either acceptor or initiator connection events,
@@ -472,42 +431,7 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 	return nil
 }
 
-func (p *Peer) migrateRelayConnection(newAddr net.IP) error {
-	if p.relayConn == nil {
-		return fmt.Errorf("no relay connection to migrate")
-	}
-	if p.relayConn.Context().Err() != nil {
-		return fmt.Errorf("relay connection is closed, cannot migrate")
-	}
-
-	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-	if err != nil {
-		return fmt.Errorf("failed to create new UDP connection for relay: %v", err)
-	}
-	newTransport := &quic.Transport{Conn: newUDPConn}
-	path, err := p.relayConn.AddPath(newTransport)
-	if err != nil {
-		newUDPConn.Close()
-		return fmt.Errorf("failed to add new path to relay: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	log.Printf("Probing new path to relay server (local %s)", newUDPConn.LocalAddr().String())
-	if err := path.Probe(ctx); err != nil {
-		_ = path.Close()
-		newUDPConn.Close()
-		return fmt.Errorf("failed to probe new relay path: %v", err)
-	}
-	if err := path.Switch(); err != nil {
-		_ = path.Close()
-		newUDPConn.Close()
-		return fmt.Errorf("failed to switch to new relay path: %v", err)
-	}
-	p.relayTransport = newTransport
-	p.relayUdpConn = newUDPConn
-
-	return nil
-}
+// Relay connection migration removed: relay is handled by the intermediate server connection.
 
 // Send network change notification through the intermediate server
 func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
@@ -535,16 +459,16 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 
 // acceptIntermediateStreams accepts additional audio streams initiated by the
 func (p *Peer) acceptRelayStreams() {
-	if p.relayConn == nil {
-		return
-	}
-	for {
-		stream, err := p.relayConn.AcceptStream(context.Background())
-		if err != nil {
-			log.Printf("Error accepting stream from relay: %v", err)
-			return
-		}
-		log.Printf("Accepted incoming relay stream from relay server")
-		go handleIncomingAudioStream(stream, "relay")
-	}
+    if p.intermediateConn == nil {
+        return
+    }
+    for {
+        stream, err := p.intermediateConn.AcceptStream(context.Background())
+        if err != nil {
+            log.Printf("Error accepting stream from relay: %v", err)
+            return
+        }
+        log.Printf("Accepted incoming relay stream from server (relay)")
+        go handleIncomingAudioStream(stream, "relay")
+    }
 }

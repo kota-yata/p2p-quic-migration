@@ -8,7 +8,7 @@ Gstreamer with the "good" plugin is required.
 ```bash
 # Run peer
 make peer
-# Run intermediate server
+# Run intermediate server (handles signaling and relay roles)
 make intermediate
 # Generate certs for servers. Running any component with make will automatically run this beforehand
 make cert
@@ -29,11 +29,11 @@ Peers can run with explicit roles via flags:
 
 ```bash
 # sender
-make ps INTERMEDIATE_ADDR=<host:port>
+make ps SIGNALING_ADDR=<host:port>
 # receiver
-make pr INTERMEDIATE_ADDR=<host:port>
+make pr SIGNALING_ADDR=<host:port>
 ```
 
 - `sender` opens an outgoing audio stream to the peer but does not play incoming audio.
 - `receiver` accepts and plays incoming audio but does not open outgoing audio streams.
-- Simply run `make peer` runs peer as both sender and receiver, but I haven't been running peer with "both" mode for a long time so not sure if it still works
+- Simply running `make peer` runs the peer as both sender and receiver ("both").
