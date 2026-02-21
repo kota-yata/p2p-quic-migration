@@ -372,20 +372,19 @@ func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 		log.Printf("Failed to migrate server connection: %v", err)
 		return
 	}
-
 	log.Printf("Successfully migrated server connection to new address: %s", newAddr)
-
-	// Migrate relay connection to the new local path as well
-	if err := p.migrateRelayConnection(newAddr); err != nil {
-		log.Printf("Failed to migrate relay connection: %v", err)
-	} else {
-		log.Printf("Successfully migrated relay connection to new address: %s", newAddr)
-	}
 
 	if err := p.sendNetworkChangeNotification(oldAddr); err != nil {
 		log.Printf("Failed to send server network change notification after migration: %v", err)
 		return
 	}
+
+	// Migrate relay connection to the new local path as well
+	if err := p.migrateRelayConnection(newAddr); err != nil {
+		log.Printf("Failed to migrate relay connection: %v", err)
+		return
+	}
+	log.Printf("Successfully migrated relay connection to new address: %s", newAddr)
 
 	// Update relay allow list for our peers as our own source address changed from relay's perspective
 	if err := p.sendRelayAllowlistUpdate(); err != nil {
@@ -421,7 +420,7 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 	// Bind to an ephemeral port on the new address to avoid reusing the
 	// original fixed port, which can confuse NATs after interface changes.
 	// Force IPv4 UDP to avoid AF mismatch issues during migration
-	newUDPConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: newAddr, Port: 0})
+	newUDPConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: newAddr, Port: 1357})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection: %v", err)
 	}
@@ -471,7 +470,7 @@ func (p *Peer) migrateRelayConnection(newAddr net.IP) error {
 		return fmt.Errorf("relay connection is closed, cannot migrate")
 	}
 	// Create a dedicated UDP socket and transport for the relay path
-	newUDPConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: newAddr, Port: 0})
+	newUDPConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: newAddr, Port: 1452})
 	if err != nil {
 		return fmt.Errorf("failed to create new UDP connection for relay: %v", err)
 	}
