@@ -34,16 +34,22 @@ func main() {
 func parseFlags() *ServerConfig {
 	key := flag.String("key", "server.key", "TLS key (requires -cert option)")
 	cert := flag.String("cert", "server.crt", "TLS certificate (requires -key option)")
-    serverAddr := flag.String("serverAddr", "203.178.143.72:12345", "Address to intermediate server (also handles relay)")
-    role := flag.String("role", "both", "Peer role: sender, receiver, or both")
+	serverAddr := flag.String("serverAddr", "203.178.143.72:12345", "Address to intermediate (signaling) server")
+	relayAddr := flag.String("relayAddr", "", "Address to audio relay server (defaults to serverAddr if empty)")
+	role := flag.String("role", "both", "Peer role: sender, receiver, or both")
 	flag.Parse()
 
-    cfg := &ServerConfig{
-        keyFile:    *key,
-        certFile:   *cert,
-        serverAddr: *serverAddr,
-        role:       *role,
-    }
+	cfg := &ServerConfig{
+		keyFile:    *key,
+		certFile:   *cert,
+		serverAddr: *serverAddr,
+		relayAddr:  *relayAddr,
+		role:       *role,
+	}
+
+	if cfg.relayAddr == "" {
+		cfg.relayAddr = cfg.serverAddr
+	}
 
 	if *role != "sender" && *role != "receiver" && *role != "both" {
 		log.Fatalf("Invalid role specified: %s. Must be 'sender', 'receiver', or 'both'.", *role)

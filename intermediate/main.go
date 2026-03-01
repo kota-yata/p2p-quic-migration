@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"strings"
@@ -28,8 +27,6 @@ type PeerRegistry struct {
 	connIndex map[string]uint32
 	// control stream for notifications by peer ID
 	notificationStreams map[uint32]*quic.Stream
-	// relay allow list per peer (string host:port entries)
-	relayAllowList map[uint32][]string
 	// optional local address per peer (string host:port)
 	localAddrs map[uint32]string
 }
@@ -41,7 +38,6 @@ func NewPeerRegistry() *PeerRegistry {
 		connections:         make(map[uint32]*quic.Conn),
 		connIndex:           make(map[string]uint32),
 		notificationStreams: make(map[uint32]*quic.Stream),
-		relayAllowList:      make(map[uint32][]string),
 		localAddrs:          make(map[uint32]string),
 	}
 }
@@ -77,9 +73,6 @@ func (pr *PeerRegistry) RemovePeer(id uint32) {
 		if stream, exists := pr.notificationStreams[id]; exists {
 			stream.Close()
 			delete(pr.notificationStreams, id)
-		}
-		if _, ok := pr.relayAllowList[id]; ok {
-			delete(pr.relayAllowList, id)
 		}
 		if _, ok := pr.localAddrs[id]; ok {
 			delete(pr.localAddrs, id)
@@ -156,29 +149,6 @@ func (pr *PeerRegistry) notifyPeersAboutNetworkChange(changedPeerID uint32, oldA
 			log.Printf("Sent network change notification to %s about %d", peerID, changedPeerID)
 		}(fmt.Sprintf("%d", peerID), stream)
 	}
-}
-
-// SetRelayAllowList replaces the relay allow list for a given peer.
-func (pr *PeerRegistry) SetRelayAllowList(peerID uint32, allow []string) {
-	pr.mu.Lock()
-	defer pr.mu.Unlock()
-	pr.relayAllowList[peerID] = append([]string(nil), allow...)
-}
-
-// FindTargetByAllowedSource finds a connection whose allow list contains the given source address string.
-func (pr *PeerRegistry) FindTargetByAllowedSource(sourceAddr string) (*quic.Conn, uint32, bool) {
-	pr.mu.RLock()
-	defer pr.mu.RUnlock()
-	for id, list := range pr.relayAllowList {
-		for _, v := range list {
-			if v == sourceAddr {
-				if c, ok := pr.connections[id]; ok {
-					return c, id, true
-				}
-			}
-		}
-	}
-	return nil, 0, false
 }
 
 // SetLocalAddr records a peer's local address (host:port). Empty string clears it.
@@ -378,67 +348,13 @@ func handleNonControlStream(stream *quic.Stream, conn *quic.Conn, peerID uint32)
 	}
 
 	switch m := msg.(type) {
-	case proto.AudioRelayReq:
-		// Relay: this stream will carry raw audio to be forwarded to the target
-		sourceAddr := conn.RemoteAddr().String()
-		targetConn, targetID, ok := registry.FindTargetByAllowedSource(sourceAddr)
-		if !ok {
-			log.Printf("No target peer found whose allow list permits source %s; dropping relay request", sourceAddr)
-			return
-		}
-		targetStream, err := targetConn.OpenStreamSync(context.Background())
-		if err != nil {
-			log.Printf("Failed to open stream to target %d for %s: %v", targetID, sourceAddr, err)
-			return
-		}
-		defer targetStream.Close()
-
-		buf := make([]byte, 4096)
-		nbytes, err := io.CopyBuffer(targetStream, stream, buf)
-		if err != nil {
-			log.Printf("Relay copy error from %s to %d: %v", sourceAddr, targetID, err)
-			return
-		}
-		log.Printf("Relayed %d bytes from %s to %d", nbytes, sourceAddr, targetID)
-		return
-
-	case proto.RelayAllowlistSet:
-		// Update allow list for this peer and continue accepting updates
-		addrs := make([]string, 0, len(m.Addresses))
-		for _, a := range m.Addresses {
-			addrs = append(addrs, net.JoinHostPort(a.IP.String(), fmt.Sprintf("%d", a.Port)))
-		}
-		registry.SetRelayAllowList(peerID, addrs)
-		log.Printf("Updated allow list for peer %d with %d entries", peerID, len(addrs))
-		// Continue to accept further updates on this stream
-		for {
-			next, err := proto.ReadMessage(stream)
-			if err != nil {
-				if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
-					return
-				}
-				log.Printf("Error reading allowlist update from %d: %v", peerID, err)
-				return
-			}
-			if upd, ok := next.(proto.RelayAllowlistSet); ok {
-				addrs = addrs[:0]
-				for _, a := range upd.Addresses {
-					addrs = append(addrs, net.JoinHostPort(a.IP.String(), fmt.Sprintf("%d", a.Port)))
-				}
-				registry.SetRelayAllowList(peerID, addrs)
-				log.Printf("Updated allow list for peer %d with %d entries", peerID, len(addrs))
-			} else {
-				log.Printf("Unexpected message on allowlist stream from %d: %T", peerID, next)
-			}
-		}
-
 	case proto.NetworkChangeReq:
 		// Allow network change notifications on non-control streams as well
 		registry.handleNetworkChange(m, peerID, conn)
 		return
 
 	default:
-		log.Printf("Unexpected first message on stream from %d: %T", peerID, m)
+		log.Printf("Unexpected or unsupported message on non-control stream from %d: %T", peerID, m)
 		return
 	}
 }

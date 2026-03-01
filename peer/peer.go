@@ -18,6 +18,7 @@ type ServerConfig struct {
 	keyFile    string
 	certFile   string
 	serverAddr string
+	relayAddr  string
 	role       string
 }
 
@@ -29,7 +30,10 @@ type Peer struct {
 	intermediateUdpConn   *net.UDPConn
 	intermediateConn      *quic.Conn
 	intermediateStream    *quic.Stream
+	relayConn             *quic.Conn
 	relayAllowStream      *quic.Stream
+	relayTransport        *quic.Transport
+	relayUdpConn          *net.UDPConn
 	networkMonitor        *network_monitor.NetworkMonitor
 	endpoints             map[uint32]endpointInfo
 	ownObservedIP         net.IP
@@ -45,13 +49,13 @@ type endpointInfo struct {
 }
 
 func (p *Peer) openRelayAllowStream() error {
-	if p.intermediateConn == nil {
-		return fmt.Errorf("no server connection available")
+	if p.relayConn == nil {
+		return fmt.Errorf("no relay connection available")
 	}
 	if p.relayAllowStream != nil {
 		return nil
 	}
-	s, err := p.intermediateConn.OpenStreamSync(context.Background())
+	s, err := p.relayConn.OpenStreamSync(context.Background())
 	if err != nil {
 		return err
 	}
@@ -108,6 +112,14 @@ func (p *Peer) Run() error {
 	}
 	defer intermediateConn.CloseWithError(0, "")
 	p.intermediateConn = intermediateConn
+
+	// Connect to the relay server (may be same addr as intermediate)
+	relayConn, err := ConnectToServer(p.config.relayAddr, p.tlsConfig, p.quicConfig, p.intermediateTransport)
+	if err != nil {
+		return fmt.Errorf("failed to connect to relay server: %v", err)
+	}
+	defer relayConn.CloseWithError(0, "")
+	p.relayConn = relayConn
 
 	p.endpoints = make(map[uint32]endpointInfo)
 	// Accept control stream initiated by the server
@@ -176,6 +188,15 @@ func (p *Peer) cleanup() {
 	}
 	if p.intermediateConn != nil {
 		p.intermediateConn.CloseWithError(0, "")
+	}
+	if p.relayConn != nil {
+		p.relayConn.CloseWithError(0, "")
+	}
+	if p.relayTransport != nil {
+		p.relayTransport.Close()
+	}
+	if p.relayUdpConn != nil {
+		p.relayUdpConn.Close()
 	}
 	if p.networkMonitor != nil {
 		p.networkMonitor.Stop()
@@ -289,11 +310,11 @@ func (p *Peer) HandleNetworkChange(peerID uint32, oldAddr, newAddr string) {
 }
 
 func (p *Peer) switchToAudioRelay(targetPeerID uint32) error {
-	if p.intermediateConn == nil {
-		return fmt.Errorf("no server connection available for relay")
+	if p.relayConn == nil {
+		return fmt.Errorf("no relay connection available for relay")
 	}
 
-	stream, err := p.intermediateConn.OpenStreamSync(context.Background())
+	stream, err := p.relayConn.OpenStreamSync(context.Background())
 	if err != nil {
 		return fmt.Errorf("failed to open audio relay stream: %v", err)
 	}
@@ -322,6 +343,15 @@ func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 		return
 	}
 	log.Printf("Successfully migrated server connection to new address: %s", newAddr)
+
+	// Also migrate the relay connection
+	if p.relayConn != nil {
+		if err := p.migrateRelayConnection(newAddr); err != nil {
+			log.Printf("Failed to migrate relay connection: %v", err)
+		} else {
+			log.Printf("Successfully migrated relay connection to new address: %s", newAddr)
+		}
+	}
 
 	if err := p.sendNetworkChangeNotification(oldAddr); err != nil {
 		log.Printf("Failed to send server network change notification after migration: %v", err)
@@ -400,6 +430,48 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 	return nil
 }
 
+func (p *Peer) migrateRelayConnection(newAddr net.IP) error {
+	if p.relayConn.Context().Err() != nil {
+		return fmt.Errorf("connection is already closed, cannot migrate (relay)")
+	}
+
+	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		return fmt.Errorf("failed to create new UDP connection for relay: %v", err)
+	}
+
+	newTransport := &quic.Transport{Conn: newUDPConn}
+
+	path, err := p.relayConn.AddPath(newTransport)
+	if err != nil {
+		newUDPConn.Close()
+		return fmt.Errorf("failed to add new path to relay: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	log.Printf("Probing new path to relay server (local %s)", newUDPConn.LocalAddr().String())
+	if err := path.Probe(ctx); err != nil {
+		newUDPConn.Close()
+		return fmt.Errorf("failed to probe new relay path: %v", err)
+	}
+
+	log.Printf("Switching to new relay path")
+	if err := path.Switch(); err != nil {
+		if closeErr := path.Close(); closeErr != nil {
+			log.Printf("Warning: failed to close relay path after switch failure: %v", closeErr)
+		}
+		newUDPConn.Close()
+		return fmt.Errorf("failed to switch to new relay path: %v", err)
+	}
+
+	p.relayTransport = newTransport
+	p.relayUdpConn = newUDPConn
+
+	return nil
+}
+
 func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	if p.intermediateConn.Context().Err() != nil {
 		return p.intermediateConn.Context().Err()
@@ -422,13 +494,13 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	return nil
 }
 
-// acceptIntermediateStreams accepts additional audio streams initiated by the
+// acceptRelayStreams accepts additional audio streams initiated by the relay server
 func (p *Peer) acceptRelayStreams() {
-	if p.intermediateConn == nil {
+	if p.relayConn == nil {
 		return
 	}
 	for {
-		stream, err := p.intermediateConn.AcceptStream(context.Background())
+		stream, err := p.relayConn.AcceptStream(context.Background())
 		if err != nil {
 			log.Printf("Error accepting stream from relay: %v", err)
 			return
