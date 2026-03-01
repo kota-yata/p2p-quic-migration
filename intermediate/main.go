@@ -104,22 +104,6 @@ func (pr *PeerRegistry) UpdateLastSeen(id uint32) {
 	}
 }
 
-func (pr *PeerRegistry) GetPeers() []*shared.PeerInfo {
-	pr.mu.RLock()
-	defer pr.mu.RUnlock()
-
-	peers := make([]*shared.PeerInfo, 0, len(pr.peers))
-	for _, peer := range pr.peers {
-		peers = append(peers, peer)
-	}
-	return peers
-}
-
-func (pr *PeerRegistry) GetPeerCount() int {
-	pr.mu.RLock()
-	defer pr.mu.RUnlock()
-	return len(pr.peers)
-}
 
 func (pr *PeerRegistry) AddNotificationStream(id uint32, stream *quic.Stream) {
 	pr.mu.Lock()

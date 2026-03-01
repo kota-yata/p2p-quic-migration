@@ -44,7 +44,6 @@ type endpointInfo struct {
 	hasLocal bool
 }
 
-// openRelayAllowStream opens (or reopens) the control stream used to send allowlist updates.
 func (p *Peer) openRelayAllowStream() error {
 	if p.intermediateConn == nil {
 		return fmt.Errorf("no server connection available")
@@ -60,21 +59,16 @@ func (p *Peer) openRelayAllowStream() error {
 	return nil
 }
 
-// sendRelayAllowlistUpdate sends the current known peers as allowlist to the relay.
 func (p *Peer) sendRelayAllowlistUpdate() error {
 	if err := p.openRelayAllowStream(); err != nil {
 		return err
 	}
-	// Build allowlist based on initial phase strategy: include local+observed when in same segment
 	addrs := make([]proto.Address, 0, len(p.endpoints)*2)
 	for _, ep := range p.endpoints {
-		// Always include observed
 		if a, ok := toProtoAddr(ep.observed); ok {
 			addrs = append(addrs, a)
 		}
-		// Include local if present and same segment (compare observed IPs)
 		if ep.hasLocal && p.ownObservedIP != nil {
-			// Determine peer observed IP
 			if host, _, err := net.SplitHostPort(ep.observed); err == nil {
 				peerObsIP := net.ParseIP(host)
 				if sameIPFamily(peerObsIP, p.ownObservedIP) && ipEqual(peerObsIP, p.ownObservedIP) {
@@ -115,7 +109,6 @@ func (p *Peer) Run() error {
 	defer intermediateConn.CloseWithError(0, "")
 	p.intermediateConn = intermediateConn
 
-	// init peer discovery and handling
 	p.endpoints = make(map[uint32]endpointInfo)
 	stream, err := intermediateConn.OpenStreamSync(context.Background())
 	if err != nil {
@@ -124,10 +117,8 @@ func (p *Peer) Run() error {
 	defer stream.Close()
 	p.intermediateStream = stream
 	go IntermediateControlReadLoop(intermediateConn, p, stream)
-	// Accept additional streams from the intermediate (e.g., audio relay)
 	go p.acceptRelayStreams()
 
-	// monitor established connections and coordinate cancellation/handling
 	go p.monitorHolepunch()
 
 	return p.runPeerListener()
@@ -169,7 +160,7 @@ func (p *Peer) setupTransport() error {
 	p.intermediateTransport = &quic.Transport{
 		Conn: p.intermediateUdpConn,
 	}
-	// No separate relay transport; relay uses intermediate transport
+	// Relay uses the same transport
 
 	return nil
 }
@@ -179,7 +170,6 @@ func (p *Peer) cleanup() {
 	if p.intermediateTransport != nil {
 		p.intermediateTransport.Close()
 	}
-	// No separate relay transport to close
 	if p.intermediateUdpConn != nil {
 		p.intermediateUdpConn.Close()
 	}
@@ -212,11 +202,9 @@ func (p *Peer) runPeerListener() error {
 			log.Printf("Re-listened on new transport at %s", ln.Addr().String())
 			continue
 		}
-		// notify accept event; monitor will cancel dialers and handle
 		select {
 		case connectionEstablished <- connchan{conn: conn, isAcceptor: true}:
 		default:
-			// if buffer is full, close the new conn
 			log.Printf("connectionEstablished channel full; dropping accept notification")
 			conn.CloseWithError(0, "dropped: channel full")
 		}
@@ -226,7 +214,6 @@ func (p *Peer) runPeerListener() error {
 func (p *Peer) handleIncomingConnection(conn *quic.Conn) {
 	log.Print("New Peer Connection Accepted. Setting up audio streaming...")
 
-	// stop any relay now that direct P2P is up
 	p.StopAudioRelay()
 
 	// Since we received the connection, we act as the "acceptor"
@@ -234,7 +221,6 @@ func (p *Peer) handleIncomingConnection(conn *quic.Conn) {
 	handleCommunicationAsAcceptor(conn, p.config.role)
 }
 
-// initial endpoints received from server
 func (p *Peer) handleInitialEndpoints(entries []proto.PeerEndpoint) {
 	for _, e := range entries {
 		peerObs := net.JoinHostPort(e.Observed.IP.String(), fmt.Sprintf("%d", e.Observed.Port))
@@ -265,14 +251,6 @@ func (p *Peer) handleNewEndpoint(e proto.PeerEndpoint) {
 	}
 }
 
-func (p *Peer) startHolePunching(peerAddr string) {
-	// create a cancelable context for this punching attempt
-	ctx, cancel := context.WithCancel(context.Background())
-	// record cancel so an acceptor success can stop dial attempts
-	p.hpCancels = append(p.hpCancels, cancel)
-	go attemptNATHolePunch(ctx, p.intermediateTransport, peerAddr, p.tlsConfig, p.quicConfig, connectionEstablished)
-}
-
 func (p *Peer) StopAudioRelay() {
 	if p.audioRelayStop != nil {
 		log.Printf("Stopping audio relay due to P2P reconnection")
@@ -291,7 +269,6 @@ func (p *Peer) HandleNetworkChange(peerID uint32, oldAddr, newAddr string) {
 	ei.hasLocal = false
 	p.endpoints[peerID] = ei
 
-	// Send updated allow list to relay so it will accept from the new address
 	if err := p.sendRelayAllowlistUpdate(); err != nil {
 		log.Printf("Failed to send updated relay allowlist: %v", err)
 	}
@@ -306,25 +283,8 @@ func (p *Peer) HandleNetworkChange(peerID uint32, oldAddr, newAddr string) {
 		log.Printf("Role=%s; skipping audio relay during migration", p.config.role)
 	}
 
-	log.Printf("Starting new hole punching to updated address (observed): %s", newAddr)
+	log.Printf("Starting new hole punching to updated address: %s", newAddr)
 	p.startHolePunchingCandidates([]string{newAddr})
-}
-
-func (p *Peer) StartHolePunchingToAllPeers() {
-	log.Printf("Server starting hole punching to all known peers after network change")
-
-	if len(p.endpoints) == 0 {
-		log.Printf("No known peers to hole punch to")
-		return
-	}
-
-	for peerID, ep := range p.endpoints {
-		log.Printf("Server starting hole punch to peer %d", peerID)
-		candidates := p.buildCandidates(ep.observed, ep.local, ep.hasLocal)
-		ctx, cancel := context.WithCancel(context.Background())
-		p.hpCancels = append(p.hpCancels, cancel)
-		go attemptPrioritizedHolePunch(ctx, p.intermediateTransport, candidates, p.tlsConfig, p.quicConfig, connectionEstablished)
-	}
 }
 
 func (p *Peer) switchToAudioRelay(targetPeerID uint32) error {
@@ -337,7 +297,6 @@ func (p *Peer) switchToAudioRelay(targetPeerID uint32) error {
 		return fmt.Errorf("failed to open audio relay stream: %v", err)
 	}
 
-	// Send AUDIO_RELAY_REQ as the first framed message on this fresh stream
 	if err := proto.WriteMessage(stream, proto.AudioRelayReq{TargetPeerID: targetPeerID}); err != nil {
 		stream.Close()
 		return fmt.Errorf("failed to send audio relay request: %v", err)
@@ -345,7 +304,6 @@ func (p *Peer) switchToAudioRelay(targetPeerID uint32) error {
 
 	log.Printf("Switched to audio relay mode for peer %d", targetPeerID)
 
-	// start relay and store stopper
 	p.audioRelayStop = startAudioRelay(stream, targetPeerID)
 	return nil
 }
@@ -435,22 +393,17 @@ func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
 		return fmt.Errorf("failed to switch to new path: %v", err)
 	}
 
-	// Update the server's transport and UDP connection used for outgoing connections
 	p.intermediateTransport = newTransport
 	p.intermediateUdpConn = newUDPConn
 
 	return nil
 }
 
-// Relay connection migration removed: relay is handled by the intermediate server connection.
-
-// Send network change notification through the intermediate server
 func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 	if p.intermediateConn.Context().Err() != nil {
 		return p.intermediateConn.Context().Err()
 	}
 
-	// Build payload with old address only; server uses observed remote for new.
 	addr := proto.Address{}
 	if oldAddr.To4() != nil {
 		addr.AF = 0x04

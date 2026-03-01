@@ -1,10 +1,8 @@
-// Communication with intermediate server (simplified)
-
 package main
 
 import (
-	"context"
-	"crypto/tls"
+    "context"
+    "crypto/tls"
 	"fmt"
 	"log"
 	"net"
@@ -38,7 +36,6 @@ func ConnectToServer(serverAddr string, tlsConfig *tls.Config, quicConfig *quic.
 }
 
 func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) {
-    // Expect ObservedAddr first
     msg, err := proto.ReadMessage(stream)
     if err != nil {
         log.Printf("Failed to read ObservedAddr: %v", err)
@@ -52,13 +49,11 @@ func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) 
     p.ownObservedIP = oa.Observed.IP
     log.Printf("Server observed our address: %s:%d", oa.Observed.IP.String(), oa.Observed.Port)
 
-    // Determine local address (from network monitor + UDP local port)
     localIP, err := p.networkMonitor.GetCurrentAddress()
     if err != nil {
         log.Printf("Failed to get local IP: %v", err)
         return
     }
-    // Read the actual bound local port from UDPConn if available
     localPort := peerPort
     if p.intermediateUdpConn != nil {
         if la, ok := p.intermediateUdpConn.LocalAddr().(*net.UDPAddr); ok && la != nil {
@@ -74,13 +69,11 @@ func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) 
         localAddr = proto.Address{AF: 0x06, IP: localIP.To16(), Port: uint16(localPort)}
     }
 
-    // Send SelfAddrsSet with our observed (from server) and local
     if err := proto.WriteMessage(stream, proto.SelfAddrsSet{Observed: oa.Observed, HasLocal: true, Local: localAddr}); err != nil {
         log.Printf("Failed to send SelfAddrsSet: %v", err)
         return
     }
 
-    // Request endpoints directory
     if err := proto.WriteMessage(stream, proto.GetPeerEndpointsReq{}); err != nil {
         log.Printf("Failed to send GetPeerEndpointsReq: %v", err)
         return
