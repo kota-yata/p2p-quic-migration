@@ -18,32 +18,32 @@ import (
 )
 
 type PeerRegistry struct {
-    mu     sync.RWMutex
-    nextID uint32
-    // peer information, keyed by uint32 ID
-    peers map[uint32]*shared.PeerInfo
-    // connection by peer ID
-    connections map[uint32]*quic.Conn
-    // reverse lookup: connection remote addr string -> peer ID
-    connIndex map[string]uint32
-    // control stream for notifications by peer ID
-    notificationStreams map[uint32]*quic.Stream
-    // relay allow list per peer (string host:port entries)
-    relayAllowList map[uint32][]string
-    // optional local address per peer (string host:port)
-    localAddrs map[uint32]string
+	mu     sync.RWMutex
+	nextID uint32
+	// peer information, keyed by uint32 ID
+	peers map[uint32]*shared.PeerInfo
+	// connection by peer ID
+	connections map[uint32]*quic.Conn
+	// reverse lookup: connection remote addr string -> peer ID
+	connIndex map[string]uint32
+	// control stream for notifications by peer ID
+	notificationStreams map[uint32]*quic.Stream
+	// relay allow list per peer (string host:port entries)
+	relayAllowList map[uint32][]string
+	// optional local address per peer (string host:port)
+	localAddrs map[uint32]string
 }
 
 func NewPeerRegistry() *PeerRegistry {
-    return &PeerRegistry{
-        nextID:              1,
-        peers:               make(map[uint32]*shared.PeerInfo),
-        connections:         make(map[uint32]*quic.Conn),
-        connIndex:           make(map[string]uint32),
-        notificationStreams: make(map[uint32]*quic.Stream),
-        relayAllowList:      make(map[uint32][]string),
-        localAddrs:          make(map[uint32]string),
-    }
+	return &PeerRegistry{
+		nextID:              1,
+		peers:               make(map[uint32]*shared.PeerInfo),
+		connections:         make(map[uint32]*quic.Conn),
+		connIndex:           make(map[string]uint32),
+		notificationStreams: make(map[uint32]*quic.Stream),
+		relayAllowList:      make(map[uint32][]string),
+		localAddrs:          make(map[uint32]string),
+	}
 }
 
 func (pr *PeerRegistry) AddPeer(addr net.Addr, conn *quic.Conn) uint32 {
@@ -64,35 +64,35 @@ func (pr *PeerRegistry) AddPeer(addr net.Addr, conn *quic.Conn) uint32 {
 	pr.connIndex[conn.RemoteAddr().String()] = id
 	log.Printf("Added peer %s with address %s", id, addr.String())
 
-    return id
+	return id
 }
 
 func (pr *PeerRegistry) RemovePeer(id uint32) {
-    pr.mu.Lock()
-    defer pr.mu.Unlock()
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
 
 	if _, exists := pr.peers[id]; exists {
 		delete(pr.peers, id)
 		delete(pr.connections, id)
-        if stream, exists := pr.notificationStreams[id]; exists {
-            stream.Close()
-            delete(pr.notificationStreams, id)
-        }
-        if _, ok := pr.relayAllowList[id]; ok {
-            delete(pr.relayAllowList, id)
-        }
-        if _, ok := pr.localAddrs[id]; ok {
-            delete(pr.localAddrs, id)
-        }
-        // remove from reverse index if present
-        for k, v := range pr.connIndex {
-            if v == id {
-                delete(pr.connIndex, k)
-                break
-            }
-        }
-        log.Printf("Removed peer %s", id)
-    }
+		if stream, exists := pr.notificationStreams[id]; exists {
+			stream.Close()
+			delete(pr.notificationStreams, id)
+		}
+		if _, ok := pr.relayAllowList[id]; ok {
+			delete(pr.relayAllowList, id)
+		}
+		if _, ok := pr.localAddrs[id]; ok {
+			delete(pr.localAddrs, id)
+		}
+		// remove from reverse index if present
+		for k, v := range pr.connIndex {
+			if v == id {
+				delete(pr.connIndex, k)
+				break
+			}
+		}
+		log.Printf("Removed peer %s", id)
+	}
 }
 
 func (pr *PeerRegistry) UpdateLastSeen(id uint32) {
@@ -122,20 +122,18 @@ func (pr *PeerRegistry) GetPeerCount() int {
 }
 
 func (pr *PeerRegistry) AddNotificationStream(id uint32, stream *quic.Stream) {
-    pr.mu.Lock()
-    defer pr.mu.Unlock()
-    pr.notificationStreams[id] = stream
-    log.Printf("Added notification stream for peer %s", id)
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	pr.notificationStreams[id] = stream
+	log.Printf("Added notification stream for peer %s", id)
 }
 
 func (pr *PeerRegistry) HasNotificationStream(id uint32) bool {
-    pr.mu.RLock()
-    defer pr.mu.RUnlock()
-    _, ok := pr.notificationStreams[id]
-    return ok
+	pr.mu.RLock()
+	defer pr.mu.RUnlock()
+	_, ok := pr.notificationStreams[id]
+	return ok
 }
-
-// legacy NEW_PEER notifications removed in v2 flow; announcements happen after SelfAddrsSet
 
 func (pr *PeerRegistry) handleNetworkChange(req proto.NetworkChangeReq, peerID uint32, conn *quic.Conn) {
 	oldAddrStr := addrToString(req.OldAddress)
@@ -186,79 +184,79 @@ func (pr *PeerRegistry) notifyPeersAboutNetworkChange(changedPeerID uint32, oldA
 
 // SetRelayAllowList replaces the relay allow list for a given peer.
 func (pr *PeerRegistry) SetRelayAllowList(peerID uint32, allow []string) {
-    pr.mu.Lock()
-    defer pr.mu.Unlock()
-    pr.relayAllowList[peerID] = append([]string(nil), allow...)
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	pr.relayAllowList[peerID] = append([]string(nil), allow...)
 }
 
 // FindTargetByAllowedSource finds a connection whose allow list contains the given source address string.
 func (pr *PeerRegistry) FindTargetByAllowedSource(sourceAddr string) (*quic.Conn, uint32, bool) {
-    pr.mu.RLock()
-    defer pr.mu.RUnlock()
-    for id, list := range pr.relayAllowList {
-        for _, v := range list {
-            if v == sourceAddr {
-                if c, ok := pr.connections[id]; ok {
-                    return c, id, true
-                }
-            }
-        }
-    }
-    return nil, 0, false
+	pr.mu.RLock()
+	defer pr.mu.RUnlock()
+	for id, list := range pr.relayAllowList {
+		for _, v := range list {
+			if v == sourceAddr {
+				if c, ok := pr.connections[id]; ok {
+					return c, id, true
+				}
+			}
+		}
+	}
+	return nil, 0, false
 }
 
 // SetLocalAddr records a peer's local address (host:port). Empty string clears it.
 func (pr *PeerRegistry) SetLocalAddr(peerID uint32, local string) {
-    pr.mu.Lock()
-    defer pr.mu.Unlock()
-    if local == "" {
-        delete(pr.localAddrs, peerID)
-        return
-    }
-    pr.localAddrs[peerID] = local
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	if local == "" {
+		delete(pr.localAddrs, peerID)
+		return
+	}
+	pr.localAddrs[peerID] = local
 }
 
 // BuildPeerEndpoint builds a PeerEndpoint for the given id.
 func (pr *PeerRegistry) BuildPeerEndpoint(id uint32) (proto.PeerEndpoint, bool) {
-    pr.mu.RLock()
-    defer pr.mu.RUnlock()
-    info, ok := pr.peers[id]
-    if !ok {
-        return proto.PeerEndpoint{}, false
-    }
-    obs, err := parseAddrString(info.Address)
-    if err != nil {
-        return proto.PeerEndpoint{}, false
-    }
-    ep := proto.PeerEndpoint{PeerID: id, Flags: 0, Observed: obs}
-    if l, ok := pr.localAddrs[id]; ok && l != "" {
-        if la, err := parseAddrString(l); err == nil {
-            ep.Flags |= 0x01
-            ep.Local = la
-        }
-    }
-    return ep, true
+	pr.mu.RLock()
+	defer pr.mu.RUnlock()
+	info, ok := pr.peers[id]
+	if !ok {
+		return proto.PeerEndpoint{}, false
+	}
+	obs, err := parseAddrString(info.Address)
+	if err != nil {
+		return proto.PeerEndpoint{}, false
+	}
+	ep := proto.PeerEndpoint{PeerID: id, Flags: 0, Observed: obs}
+	if l, ok := pr.localAddrs[id]; ok && l != "" {
+		if la, err := parseAddrString(l); err == nil {
+			ep.Flags |= 0x01
+			ep.Local = la
+		}
+	}
+	return ep, true
 }
 
 // BuildAllEndpoints creates endpoint entries for all peers except excludeID (if non-zero).
 func (pr *PeerRegistry) BuildAllEndpoints(excludeID uint32) []proto.PeerEndpoint {
-    pr.mu.RLock()
-    ids := make([]uint32, 0, len(pr.peers))
-    for id := range pr.peers {
-        if id == excludeID {
-            continue
-        }
-        ids = append(ids, id)
-    }
-    pr.mu.RUnlock()
+	pr.mu.RLock()
+	ids := make([]uint32, 0, len(pr.peers))
+	for id := range pr.peers {
+		if id == excludeID {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	pr.mu.RUnlock()
 
-    out := make([]proto.PeerEndpoint, 0, len(ids))
-    for _, id := range ids {
-        if ep, ok := pr.BuildPeerEndpoint(id); ok {
-            out = append(out, ep)
-        }
-    }
-    return out
+	out := make([]proto.PeerEndpoint, 0, len(ids))
+	for _, id := range ids {
+		if ep, ok := pr.BuildPeerEndpoint(id); ok {
+			out = append(out, ep)
+		}
+	}
+	return out
 }
 
 var registry *PeerRegistry
@@ -323,146 +321,146 @@ func handleConnection(conn *quic.Conn) {
 }
 
 func handleStream(stream *quic.Stream, conn *quic.Conn, peerID uint32) {
-    defer stream.Close()
+	defer stream.Close()
 
-    registry.UpdateLastSeen(peerID)
+	registry.UpdateLastSeen(peerID)
 
-    // If this is the first/control stream for this peer, immediately push ObservedAddr
-    if !registry.HasNotificationStream(peerID) {
-        registry.AddNotificationStream(peerID, stream)
-        // Send ObservedAddr immediately
-        addr, err := parseAddrString(conn.RemoteAddr().String())
-        if err == nil {
-            _ = proto.WriteMessage(stream, proto.ObservedAddr{Observed: addr})
-            log.Printf("Sent ObservedAddr to peer %d: %s", peerID, conn.RemoteAddr().String())
-        } else {
-            log.Printf("Failed to encode ObservedAddr for %d: %v", peerID, err)
-        }
+	// If this is the first/control stream for this peer, immediately push ObservedAddr
+	if !registry.HasNotificationStream(peerID) {
+		registry.AddNotificationStream(peerID, stream)
+		// Send ObservedAddr immediately
+		addr, err := parseAddrString(conn.RemoteAddr().String())
+		if err == nil {
+			_ = proto.WriteMessage(stream, proto.ObservedAddr{Observed: addr})
+			log.Printf("Sent ObservedAddr to peer %d: %s", peerID, conn.RemoteAddr().String())
+		} else {
+			log.Printf("Failed to encode ObservedAddr for %d: %v", peerID, err)
+		}
 
-        // Control loop: handle SelfAddrsSet, GetPeerEndpointsReq, NetworkChangeReq
-        for {
-            msg, err := proto.ReadMessage(stream)
-            if err != nil {
-                if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
-                    log.Printf("Control stream closed by peer %d", peerID)
-                } else {
-                    log.Printf("Control stream read error from %d: %v", peerID, err)
-                }
-                return
-            }
-            switch m := msg.(type) {
-            case proto.SelfAddrsSet:
-                // Store local address (ignore observed from peer; use server observed)
-                if m.HasLocal {
-                    localStr := addrToString(m.Local)
-                    registry.SetLocalAddr(peerID, localStr)
-                    log.Printf("Peer %d set local address %s", peerID, localStr)
-                } else {
-                    registry.SetLocalAddr(peerID, "")
-                    log.Printf("Peer %d has no local address", peerID)
-                }
-                // Broadcast NewPeerEndpointNotif to others
-                ep, ok := registry.BuildPeerEndpoint(peerID)
-                if ok {
-                    registry.mu.RLock()
-                    for otherID, s := range registry.notificationStreams {
-                        if otherID == peerID {
-                            continue
-                        }
-                        _ = proto.WriteMessage(s, proto.NewPeerEndpointNotif{Entry: ep})
-                    }
-                    registry.mu.RUnlock()
-                }
-            case proto.GetPeerEndpointsReq:
-                entries := registry.BuildAllEndpoints(peerID)
-                if err := proto.WriteMessage(stream, proto.PeerEndpointsResp{Entries: entries}); err != nil {
-                    log.Printf("Failed to write PeerEndpointsResp: %v", err)
-                    return
-                }
-                log.Printf("Sent %d endpoints to peer %d", len(entries), peerID)
-            case proto.NetworkChangeReq:
-                registry.handleNetworkChange(m, peerID, conn)
-            default:
-                log.Printf("Unhandled message on control stream from %d: %T", peerID, m)
-            }
-        }
-    }
+		// Control loop: handle SelfAddrsSet, GetPeerEndpointsReq, NetworkChangeReq
+		for {
+			msg, err := proto.ReadMessage(stream)
+			if err != nil {
+				if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
+					log.Printf("Control stream closed by peer %d", peerID)
+				} else {
+					log.Printf("Control stream read error from %d: %v", peerID, err)
+				}
+				return
+			}
+			switch m := msg.(type) {
+			case proto.SelfAddrsSet:
+				// Store local address (ignore observed from peer; use server observed)
+				if m.HasLocal {
+					localStr := addrToString(m.Local)
+					registry.SetLocalAddr(peerID, localStr)
+					log.Printf("Peer %d set local address %s", peerID, localStr)
+				} else {
+					registry.SetLocalAddr(peerID, "")
+					log.Printf("Peer %d has no local address", peerID)
+				}
+				// Broadcast NewPeerEndpointNotif to others
+				ep, ok := registry.BuildPeerEndpoint(peerID)
+				if ok {
+					registry.mu.RLock()
+					for otherID, s := range registry.notificationStreams {
+						if otherID == peerID {
+							continue
+						}
+						_ = proto.WriteMessage(s, proto.NewPeerEndpointNotif{Entry: ep})
+					}
+					registry.mu.RUnlock()
+				}
+			case proto.GetPeerEndpointsReq:
+				entries := registry.BuildAllEndpoints(peerID)
+				if err := proto.WriteMessage(stream, proto.PeerEndpointsResp{Entries: entries}); err != nil {
+					log.Printf("Failed to write PeerEndpointsResp: %v", err)
+					return
+				}
+				log.Printf("Sent %d endpoints to peer %d", len(entries), peerID)
+			case proto.NetworkChangeReq:
+				registry.handleNetworkChange(m, peerID, conn)
+			default:
+				log.Printf("Unhandled message on control stream from %d: %T", peerID, m)
+			}
+		}
+	}
 
-    // Non-control streams: Read first message to determine stream intent
-    msg, err := proto.ReadMessage(stream)
-    if err != nil {
-        if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
-            log.Printf("Stream closed by peer %d before first message", peerID)
-        } else {
-            log.Printf("Stream read error (first message): %v", err)
-        }
-        return
-    }
+	// Non-control streams: Read first message to determine stream intent
+	msg, err := proto.ReadMessage(stream)
+	if err != nil {
+		if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
+			log.Printf("Stream closed by peer %d before first message", peerID)
+		} else {
+			log.Printf("Stream read error (first message): %v", err)
+		}
+		return
+	}
 
-    switch m := msg.(type) {
-    case proto.AudioRelayReq:
-        // Relay: this stream will carry raw audio to be forwarded to the target
-        sourceAddr := conn.RemoteAddr().String()
-        targetConn, targetID, ok := registry.FindTargetByAllowedSource(sourceAddr)
-        if !ok {
-            log.Printf("No target peer found whose allow list permits source %s; dropping relay request", sourceAddr)
-            return
-        }
-        targetStream, err := targetConn.OpenStreamSync(context.Background())
-        if err != nil {
-            log.Printf("Failed to open stream to target %d for %s: %v", targetID, sourceAddr, err)
-            return
-        }
-        defer targetStream.Close()
+	switch m := msg.(type) {
+	case proto.AudioRelayReq:
+		// Relay: this stream will carry raw audio to be forwarded to the target
+		sourceAddr := conn.RemoteAddr().String()
+		targetConn, targetID, ok := registry.FindTargetByAllowedSource(sourceAddr)
+		if !ok {
+			log.Printf("No target peer found whose allow list permits source %s; dropping relay request", sourceAddr)
+			return
+		}
+		targetStream, err := targetConn.OpenStreamSync(context.Background())
+		if err != nil {
+			log.Printf("Failed to open stream to target %d for %s: %v", targetID, sourceAddr, err)
+			return
+		}
+		defer targetStream.Close()
 
-        buf := make([]byte, 4096)
-        nbytes, err := io.CopyBuffer(targetStream, stream, buf)
-        if err != nil {
-            log.Printf("Relay copy error from %s to %d: %v", sourceAddr, targetID, err)
-            return
-        }
-        log.Printf("Relayed %d bytes from %s to %d", nbytes, sourceAddr, targetID)
-        return
+		buf := make([]byte, 4096)
+		nbytes, err := io.CopyBuffer(targetStream, stream, buf)
+		if err != nil {
+			log.Printf("Relay copy error from %s to %d: %v", sourceAddr, targetID, err)
+			return
+		}
+		log.Printf("Relayed %d bytes from %s to %d", nbytes, sourceAddr, targetID)
+		return
 
-    case proto.RelayAllowlistSet:
-        // Update allow list for this peer and continue accepting updates
-        addrs := make([]string, 0, len(m.Addresses))
-        for _, a := range m.Addresses {
-            addrs = append(addrs, net.JoinHostPort(a.IP.String(), fmt.Sprintf("%d", a.Port)))
-        }
-        registry.SetRelayAllowList(peerID, addrs)
-        log.Printf("Updated allow list for peer %d with %d entries", peerID, len(addrs))
-        // Continue to accept further updates on this stream
-        for {
-            next, err := proto.ReadMessage(stream)
-            if err != nil {
-                if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
-                    return
-                }
-                log.Printf("Error reading allowlist update from %d: %v", peerID, err)
-                return
-            }
-            if upd, ok := next.(proto.RelayAllowlistSet); ok {
-                addrs = addrs[:0]
-                for _, a := range upd.Addresses {
-                    addrs = append(addrs, net.JoinHostPort(a.IP.String(), fmt.Sprintf("%d", a.Port)))
-                }
-                registry.SetRelayAllowList(peerID, addrs)
-                log.Printf("Updated allow list for peer %d with %d entries", peerID, len(addrs))
-            } else {
-                log.Printf("Unexpected message on allowlist stream from %d: %T", peerID, next)
-            }
-        }
+	case proto.RelayAllowlistSet:
+		// Update allow list for this peer and continue accepting updates
+		addrs := make([]string, 0, len(m.Addresses))
+		for _, a := range m.Addresses {
+			addrs = append(addrs, net.JoinHostPort(a.IP.String(), fmt.Sprintf("%d", a.Port)))
+		}
+		registry.SetRelayAllowList(peerID, addrs)
+		log.Printf("Updated allow list for peer %d with %d entries", peerID, len(addrs))
+		// Continue to accept further updates on this stream
+		for {
+			next, err := proto.ReadMessage(stream)
+			if err != nil {
+				if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
+					return
+				}
+				log.Printf("Error reading allowlist update from %d: %v", peerID, err)
+				return
+			}
+			if upd, ok := next.(proto.RelayAllowlistSet); ok {
+				addrs = addrs[:0]
+				for _, a := range upd.Addresses {
+					addrs = append(addrs, net.JoinHostPort(a.IP.String(), fmt.Sprintf("%d", a.Port)))
+				}
+				registry.SetRelayAllowList(peerID, addrs)
+				log.Printf("Updated allow list for peer %d with %d entries", peerID, len(addrs))
+			} else {
+				log.Printf("Unexpected message on allowlist stream from %d: %T", peerID, next)
+			}
+		}
 
-    case proto.NetworkChangeReq:
-        // Allow network change notifications on non-control streams as well
-        registry.handleNetworkChange(m, peerID, conn)
-        return
+	case proto.NetworkChangeReq:
+		// Allow network change notifications on non-control streams as well
+		registry.handleNetworkChange(m, peerID, conn)
+		return
 
-    default:
-        log.Printf("Unexpected first message on stream from %d: %T", peerID, m)
-        return
-    }
+	default:
+		log.Printf("Unexpected first message on stream from %d: %T", peerID, m)
+		return
+	}
 }
 
 // helper: parse "host:port" into protocol Address
