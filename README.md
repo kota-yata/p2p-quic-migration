@@ -17,23 +17,20 @@ make build
 ```
 
 1. Run `make intermediate` somewhere  
-2. Run `make peer` on a machine behind NAT with your media files at ./static/output.mp3
-3. Run `make peer` on another machine behind NAT  
+2. Run `make ps` on a machine behind NAT with your media files at ./static/output.mp3
+3. Run `make pr` on another machine behind NAT  
 
-You must run the peers on different networks unless your router supports [NAT loopback](https://nordvpn.com/cybersecurity/glossary/nat-loopback/) (a.k.a. NAT hairpinning).
-
-If the connection succeeds, you should hear the audio. Then try switching the client's network (WiFi to cellular for example). The sound will be interrupted for like 3 sec and recovered soon.
+If the connection succeeds, you should hear the audio. Then try switching the client's network (WiFi to cellular for example). The sound will be interrupted for less than a second and recovered.
 
 ## Roles: sender vs receiver
 Peers can run with explicit roles via flags:
 
 ```bash
 # sender
-make ps SIGNALING_ADDR=<host:port>
+make ps
 # receiver
-make pr SIGNALING_ADDR=<host:port>
+make pr
 ```
 
 - `sender` opens an outgoing audio stream to the peer but does not play incoming audio.
 - `receiver` accepts and plays incoming audio but does not open outgoing audio streams.
-- Simply running `make peer` runs the peer as both sender and receiver ("both").
