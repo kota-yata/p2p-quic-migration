@@ -11,19 +11,18 @@ import (
 type MessageType uint8
 
 const (
-    TypeGetPeersReq        MessageType = 0x01
-    TypePeerListResp       MessageType = 0x02
-    TypeNewPeerNotif       MessageType = 0x03
-    TypeNetworkChangeReq   MessageType = 0x04
-    TypeNetworkChangeNotif MessageType = 0x05
-    TypeAudioRelayReq      MessageType = 0x06
-    TypeRelayAllowlistSet  MessageType = 0x07
-    // v2 automatic local/global addressing
-    TypeObservedAddr           MessageType = 0x08
-    TypeSelfAddrsSet           MessageType = 0x09
-    TypeGetPeerEndpointsReq    MessageType = 0x0A
-    TypePeerEndpointsResp      MessageType = 0x0B
-    TypeNewPeerEndpointNotif   MessageType = 0x0C
+	TypeGetPeersReq          MessageType = 0x01
+	TypePeerListResp         MessageType = 0x02
+	TypeNewPeerNotif         MessageType = 0x03
+	TypeNetworkChangeReq     MessageType = 0x04
+	TypeNetworkChangeNotif   MessageType = 0x05
+	TypeAudioRelayReq        MessageType = 0x06
+	TypeRelayAllowlistSet    MessageType = 0x07
+	TypeObservedAddr         MessageType = 0x08
+	TypeSelfAddrsSet         MessageType = 0x09
+	TypeGetPeerEndpointsReq  MessageType = 0x0A
+	TypePeerEndpointsResp    MessageType = 0x0B
+	TypeNewPeerEndpointNotif MessageType = 0x0C
 )
 
 // Message is the common interface for all control messages.
@@ -35,9 +34,9 @@ type Message interface {
 // Address is a compact socket address encoding.
 // AF: 0x04 (IPv4) or 0x06 (IPv6)
 type Address struct {
-    AF   uint8
-    IP   net.IP
-    Port uint16
+	AF   uint8
+	IP   net.IP
+	Port uint16
 }
 
 func (a Address) MarshalBinary() ([]byte, error) {
@@ -184,35 +183,35 @@ func (m NetworkChangeNotif) MarshalBinaryPayload() ([]byte, error) {
 }
 
 type AudioRelayReq struct {
-    TargetPeerID uint32
+	TargetPeerID uint32
 }
 
 func (AudioRelayReq) Type() MessageType { return TypeAudioRelayReq }
 func (m AudioRelayReq) MarshalBinaryPayload() ([]byte, error) {
-    var tmp [4]byte
-    binary.BigEndian.PutUint32(tmp[:], m.TargetPeerID)
-    return tmp[:], nil
+	var tmp [4]byte
+	binary.BigEndian.PutUint32(tmp[:], m.TargetPeerID)
+	return tmp[:], nil
 }
 
 // RelayAllowlistSet replaces the relay allow list for the sending peer connection.
 type RelayAllowlistSet struct {
-    Addresses []Address // up to 255 entries
+	Addresses []Address // up to 255 entries
 }
 
 func (RelayAllowlistSet) Type() MessageType { return TypeRelayAllowlistSet }
 func (m RelayAllowlistSet) MarshalBinaryPayload() ([]byte, error) {
-    if len(m.Addresses) > 255 {
-        return nil, errors.New("too many addresses for RELAY_ALLOWLIST_SET")
-    }
-    out := []byte{byte(len(m.Addresses))}
-    for _, a := range m.Addresses {
-        ab, err := a.MarshalBinary()
-        if err != nil {
-            return nil, err
-        }
-        out = append(out, ab...)
-    }
-    return out, nil
+	if len(m.Addresses) > 255 {
+		return nil, errors.New("too many addresses for RELAY_ALLOWLIST_SET")
+	}
+	out := []byte{byte(len(m.Addresses))}
+	for _, a := range m.Addresses {
+		ab, err := a.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ab...)
+	}
+	return out, nil
 }
 
 // WriteMessage writes a single framed message (Type, Length, Payload) to w.
@@ -255,7 +254,7 @@ func ReadMessage(r io.Reader) (Message, error) {
 }
 
 func decodePayload(t MessageType, p []byte) (Message, error) {
-    switch t {
+	switch t {
 	case TypeGetPeersReq:
 		if len(p) != 0 {
 			return nil, errors.New("GET_PEERS_REQ must have empty payload")
@@ -332,143 +331,143 @@ func decodePayload(t MessageType, p []byte) (Message, error) {
 			return nil, errors.New("extra bytes in NETWORK_CHANGE_NOTIF payload")
 		}
 		return NetworkChangeNotif{PeerID: pid, OldAddress: oldA, NewAddress: newA}, nil
-    case TypeAudioRelayReq:
-        if len(p) != 4 {
-            return nil, errors.New("AUDIO_RELAY_REQ payload must be 4 bytes")
-        }
-        pid := binary.BigEndian.Uint32(p[:4])
-        return AudioRelayReq{TargetPeerID: pid}, nil
-    case TypeRelayAllowlistSet:
-        if len(p) < 1 {
-            return nil, io.ErrUnexpectedEOF
-        }
-        count := int(p[0])
-        off := 1
-        addrs := make([]Address, 0, count)
-        for i := 0; i < count; i++ {
-            var a Address
-            n, err := a.UnmarshalBinary(p[off:])
-            if err != nil {
-                return nil, err
-            }
-            off += n
-            addrs = append(addrs, a)
-        }
-        if off != len(p) {
-            return nil, errors.New("extra bytes in RELAY_ALLOWLIST_SET payload")
-        }
-        return RelayAllowlistSet{Addresses: addrs}, nil
-    case TypeObservedAddr:
-        var a Address
-        n, err := a.UnmarshalBinary(p)
-        if err != nil {
-            return nil, err
-        }
-        if n != len(p) {
-            return nil, errors.New("extra bytes in OBSERVED_ADDR payload")
-        }
-        return ObservedAddr{Observed: a}, nil
-    case TypeSelfAddrsSet:
-        // Observed Address + Flags (1 byte) [+ Local Address if flag set]
-        var obs Address
-        off, err := obs.UnmarshalBinary(p)
-        if err != nil {
-            return nil, err
-        }
-        if len(p[off:]) < 1 {
-            return nil, io.ErrUnexpectedEOF
-        }
-        flags := p[off]
-        off++
-        var local Address
-        if flags&0x01 != 0 {
-            n, err := local.UnmarshalBinary(p[off:])
-            if err != nil {
-                return nil, err
-            }
-            off += n
-        }
-        if off != len(p) {
-            return nil, errors.New("extra bytes in SELF_ADDRS_SET payload")
-        }
-        return SelfAddrsSet{Observed: obs, HasLocal: flags&0x01 != 0, Local: local}, nil
-    case TypeGetPeerEndpointsReq:
-        if len(p) != 0 {
-            return nil, errors.New("GET_PEER_ENDPOINTS_REQ must have empty payload")
-        }
-        return GetPeerEndpointsReq{}, nil
-    case TypePeerEndpointsResp:
-        if len(p) < 2 {
-            return nil, io.ErrUnexpectedEOF
-        }
-        count := int(binary.BigEndian.Uint16(p[:2]))
-        off := 2
-        entries := make([]PeerEndpoint, 0, count)
-        for i := 0; i < count; i++ {
-            ep, n, err := unmarshalPeerEndpoint(p[off:])
-            if err != nil {
-                return nil, err
-            }
-            off += n
-            entries = append(entries, ep)
-        }
-        if off != len(p) {
-            return nil, errors.New("extra bytes in PEER_ENDPOINTS_RESP payload")
-        }
-        return PeerEndpointsResp{Entries: entries}, nil
-    case TypeNewPeerEndpointNotif:
-        ep, n, err := unmarshalPeerEndpoint(p)
-        if err != nil {
-            return nil, err
-        }
-        if n != len(p) {
-            return nil, errors.New("extra bytes in NEW_PEER_ENDPOINT_NOTIF payload")
-        }
-        return NewPeerEndpointNotif{Entry: ep}, nil
-    default:
-        return nil, fmt.Errorf("unknown message type: 0x%02x", uint8(t))
-    }
+	case TypeAudioRelayReq:
+		if len(p) != 4 {
+			return nil, errors.New("AUDIO_RELAY_REQ payload must be 4 bytes")
+		}
+		pid := binary.BigEndian.Uint32(p[:4])
+		return AudioRelayReq{TargetPeerID: pid}, nil
+	case TypeRelayAllowlistSet:
+		if len(p) < 1 {
+			return nil, io.ErrUnexpectedEOF
+		}
+		count := int(p[0])
+		off := 1
+		addrs := make([]Address, 0, count)
+		for i := 0; i < count; i++ {
+			var a Address
+			n, err := a.UnmarshalBinary(p[off:])
+			if err != nil {
+				return nil, err
+			}
+			off += n
+			addrs = append(addrs, a)
+		}
+		if off != len(p) {
+			return nil, errors.New("extra bytes in RELAY_ALLOWLIST_SET payload")
+		}
+		return RelayAllowlistSet{Addresses: addrs}, nil
+	case TypeObservedAddr:
+		var a Address
+		n, err := a.UnmarshalBinary(p)
+		if err != nil {
+			return nil, err
+		}
+		if n != len(p) {
+			return nil, errors.New("extra bytes in OBSERVED_ADDR payload")
+		}
+		return ObservedAddr{Observed: a}, nil
+	case TypeSelfAddrsSet:
+		// Observed Address + Flags (1 byte) [+ Local Address if flag set]
+		var obs Address
+		off, err := obs.UnmarshalBinary(p)
+		if err != nil {
+			return nil, err
+		}
+		if len(p[off:]) < 1 {
+			return nil, io.ErrUnexpectedEOF
+		}
+		flags := p[off]
+		off++
+		var local Address
+		if flags&0x01 != 0 {
+			n, err := local.UnmarshalBinary(p[off:])
+			if err != nil {
+				return nil, err
+			}
+			off += n
+		}
+		if off != len(p) {
+			return nil, errors.New("extra bytes in SELF_ADDRS_SET payload")
+		}
+		return SelfAddrsSet{Observed: obs, HasLocal: flags&0x01 != 0, Local: local}, nil
+	case TypeGetPeerEndpointsReq:
+		if len(p) != 0 {
+			return nil, errors.New("GET_PEER_ENDPOINTS_REQ must have empty payload")
+		}
+		return GetPeerEndpointsReq{}, nil
+	case TypePeerEndpointsResp:
+		if len(p) < 2 {
+			return nil, io.ErrUnexpectedEOF
+		}
+		count := int(binary.BigEndian.Uint16(p[:2]))
+		off := 2
+		entries := make([]PeerEndpoint, 0, count)
+		for i := 0; i < count; i++ {
+			ep, n, err := unmarshalPeerEndpoint(p[off:])
+			if err != nil {
+				return nil, err
+			}
+			off += n
+			entries = append(entries, ep)
+		}
+		if off != len(p) {
+			return nil, errors.New("extra bytes in PEER_ENDPOINTS_RESP payload")
+		}
+		return PeerEndpointsResp{Entries: entries}, nil
+	case TypeNewPeerEndpointNotif:
+		ep, n, err := unmarshalPeerEndpoint(p)
+		if err != nil {
+			return nil, err
+		}
+		if n != len(p) {
+			return nil, errors.New("extra bytes in NEW_PEER_ENDPOINT_NOTIF payload")
+		}
+		return NewPeerEndpointNotif{Entry: ep}, nil
+	default:
+		return nil, fmt.Errorf("unknown message type: 0x%02x", uint8(t))
+	}
 }
 
 // v2: endpoint directory
 
 // ObservedAddr is pushed by the server immediately on control stream start.
 type ObservedAddr struct {
-    Observed Address
+	Observed Address
 }
 
 func (ObservedAddr) Type() MessageType { return TypeObservedAddr }
 func (m ObservedAddr) MarshalBinaryPayload() ([]byte, error) {
-    return m.Observed.MarshalBinary()
+	return m.Observed.MarshalBinary()
 }
 
 // SelfAddrsSet is sent by the peer once after receiving ObservedAddr.
 type SelfAddrsSet struct {
-    Observed Address
-    HasLocal bool
-    Local    Address
+	Observed Address
+	HasLocal bool
+	Local    Address
 }
 
 func (SelfAddrsSet) Type() MessageType { return TypeSelfAddrsSet }
 func (m SelfAddrsSet) MarshalBinaryPayload() ([]byte, error) {
-    ob, err := m.Observed.MarshalBinary()
-    if err != nil {
-        return nil, err
-    }
-    flags := byte(0)
-    if m.HasLocal {
-        flags |= 0x01
-    }
-    out := append([]byte{}, ob...)
-    out = append(out, flags)
-    if m.HasLocal {
-        lb, err := m.Local.MarshalBinary()
-        if err != nil {
-            return nil, err
-        }
-        out = append(out, lb...)
-    }
-    return out, nil
+	ob, err := m.Observed.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	flags := byte(0)
+	if m.HasLocal {
+		flags |= 0x01
+	}
+	out := append([]byte{}, ob...)
+	out = append(out, flags)
+	if m.HasLocal {
+		lb, err := m.Local.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, lb...)
+	}
+	return out, nil
 }
 
 type GetPeerEndpointsReq struct{}
@@ -478,89 +477,89 @@ func (GetPeerEndpointsReq) MarshalBinaryPayload() ([]byte, error) { return nil, 
 
 // PeerEndpoint describes a peer's observed and optional local address.
 type PeerEndpoint struct {
-    PeerID  uint32
-    Flags   uint8 // bit0: HasLocal
-    Observed Address
-    Local    Address // valid only if Flags&1
+	PeerID   uint32
+	Flags    uint8 // bit0: HasLocal
+	Observed Address
+	Local    Address // valid only if Flags&1
 }
 
 func (ep PeerEndpoint) MarshalBinary() ([]byte, error) {
-    var out []byte
-    var idb [4]byte
-    idb[0] = byte(ep.PeerID >> 24)
-    idb[1] = byte(ep.PeerID >> 16)
-    idb[2] = byte(ep.PeerID >> 8)
-    idb[3] = byte(ep.PeerID)
-    out = append(out, idb[:]...)
-    out = append(out, ep.Flags)
-    ob, err := ep.Observed.MarshalBinary()
-    if err != nil {
-        return nil, err
-    }
-    out = append(out, ob...)
-    if ep.Flags&0x01 != 0 {
-        lb, err := ep.Local.MarshalBinary()
-        if err != nil {
-            return nil, err
-        }
-        out = append(out, lb...)
-    }
-    return out, nil
+	var out []byte
+	var idb [4]byte
+	idb[0] = byte(ep.PeerID >> 24)
+	idb[1] = byte(ep.PeerID >> 16)
+	idb[2] = byte(ep.PeerID >> 8)
+	idb[3] = byte(ep.PeerID)
+	out = append(out, idb[:]...)
+	out = append(out, ep.Flags)
+	ob, err := ep.Observed.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, ob...)
+	if ep.Flags&0x01 != 0 {
+		lb, err := ep.Local.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, lb...)
+	}
+	return out, nil
 }
 
 func unmarshalPeerEndpoint(p []byte) (PeerEndpoint, int, error) {
-    var ep PeerEndpoint
-    if len(p) < 5 {
-        return ep, 0, io.ErrUnexpectedEOF
-    }
-    ep.PeerID = binary.BigEndian.Uint32(p[:4])
-    ep.Flags = p[4]
-    off := 5
-    var obs Address
-    n, err := obs.UnmarshalBinary(p[off:])
-    if err != nil {
-        return ep, 0, err
-    }
-    ep.Observed = obs
-    off += n
-    if ep.Flags&0x01 != 0 {
-        var loc Address
-        n2, err := loc.UnmarshalBinary(p[off:])
-        if err != nil {
-            return ep, 0, err
-        }
-        ep.Local = loc
-        off += n2
-    }
-    return ep, off, nil
+	var ep PeerEndpoint
+	if len(p) < 5 {
+		return ep, 0, io.ErrUnexpectedEOF
+	}
+	ep.PeerID = binary.BigEndian.Uint32(p[:4])
+	ep.Flags = p[4]
+	off := 5
+	var obs Address
+	n, err := obs.UnmarshalBinary(p[off:])
+	if err != nil {
+		return ep, 0, err
+	}
+	ep.Observed = obs
+	off += n
+	if ep.Flags&0x01 != 0 {
+		var loc Address
+		n2, err := loc.UnmarshalBinary(p[off:])
+		if err != nil {
+			return ep, 0, err
+		}
+		ep.Local = loc
+		off += n2
+	}
+	return ep, off, nil
 }
 
 type PeerEndpointsResp struct {
-    Entries []PeerEndpoint
+	Entries []PeerEndpoint
 }
 
 func (PeerEndpointsResp) Type() MessageType { return TypePeerEndpointsResp }
 func (m PeerEndpointsResp) MarshalBinaryPayload() ([]byte, error) {
-    if len(m.Entries) > 0xFFFF {
-        return nil, errors.New("too many endpoints")
-    }
-    out := make([]byte, 2)
-    binary.BigEndian.PutUint16(out[:2], uint16(len(m.Entries)))
-    for _, e := range m.Entries {
-        b, err := e.MarshalBinary()
-        if err != nil {
-            return nil, err
-        }
-        out = append(out, b...)
-    }
-    return out, nil
+	if len(m.Entries) > 0xFFFF {
+		return nil, errors.New("too many endpoints")
+	}
+	out := make([]byte, 2)
+	binary.BigEndian.PutUint16(out[:2], uint16(len(m.Entries)))
+	for _, e := range m.Entries {
+		b, err := e.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b...)
+	}
+	return out, nil
 }
 
 type NewPeerEndpointNotif struct {
-    Entry PeerEndpoint
+	Entry PeerEndpoint
 }
 
 func (NewPeerEndpointNotif) Type() MessageType { return TypeNewPeerEndpointNotif }
 func (m NewPeerEndpointNotif) MarshalBinaryPayload() ([]byte, error) {
-    return m.Entry.MarshalBinary()
+	return m.Entry.MarshalBinary()
 }

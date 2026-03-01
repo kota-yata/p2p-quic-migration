@@ -110,9 +110,10 @@ func (p *Peer) Run() error {
 	p.intermediateConn = intermediateConn
 
 	p.endpoints = make(map[uint32]endpointInfo)
-	stream, err := intermediateConn.OpenStreamSync(context.Background())
+	// Accept control stream initiated by the server
+	stream, err := intermediateConn.AcceptStream(context.Background())
 	if err != nil {
-		return fmt.Errorf("failed to open peer discovery stream: %v", err)
+		return fmt.Errorf("failed to accept control stream: %v", err)
 	}
 	defer stream.Close()
 	p.intermediateStream = stream
