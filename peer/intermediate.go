@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	proto "github.com/kota-yata/p2p-quic-migration/shared/cmp9protocol"
+	"github.com/kota-yata/p2p-quic-migration/shared/qswitch"
 	"github.com/quic-go/quic-go"
 )
 
@@ -36,12 +36,12 @@ func ConnectToServer(serverAddr string, tlsConfig *tls.Config, quicConfig *quic.
 }
 
 func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) {
-	msg, err := proto.ReadMessage(stream)
+	msg, err := qswitch.ReadMessage(stream)
 	if err != nil {
 		log.Printf("Failed to read ObservedAddr: %v", err)
 		return
 	}
-	oa, ok := msg.(proto.ObservedAddr)
+	oa, ok := msg.(qswitch.ObservedAddr)
 	if !ok {
 		log.Printf("Unexpected first message on control stream: %T", msg)
 		return
@@ -62,37 +62,37 @@ func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) 
 			}
 		}
 	}
-	var localAddr proto.Address
+	var localAddr qswitch.Address
 	if localIP.To4() != nil {
-		localAddr = proto.Address{AF: 0x04, IP: localIP.To4(), Port: uint16(localPort)}
+		localAddr = qswitch.Address{AF: 0x04, IP: localIP.To4(), Port: uint16(localPort)}
 	} else {
-		localAddr = proto.Address{AF: 0x06, IP: localIP.To16(), Port: uint16(localPort)}
+		localAddr = qswitch.Address{AF: 0x06, IP: localIP.To16(), Port: uint16(localPort)}
 	}
 
-	if err := proto.WriteMessage(stream, proto.SelfAddrsSet{Observed: oa.Observed, HasLocal: true, Local: localAddr}); err != nil {
+	if err := qswitch.WriteMessage(stream, qswitch.SelfAddrsSet{Observed: oa.Observed, HasLocal: true, Local: localAddr}); err != nil {
 		log.Printf("Failed to send SelfAddrsSet: %v", err)
 		return
 	}
 
-	if err := proto.WriteMessage(stream, proto.GetPeerEndpointsReq{}); err != nil {
+	if err := qswitch.WriteMessage(stream, qswitch.GetPeerEndpointsReq{}); err != nil {
 		log.Printf("Failed to send GetPeerEndpointsReq: %v", err)
 		return
 	}
 
 	for {
-		msg, err := proto.ReadMessage(stream)
+		msg, err := qswitch.ReadMessage(stream)
 		if err != nil {
 			log.Printf("Failed to read from intermediate server: %v", err)
 			return
 		}
 		switch m := msg.(type) {
-		case proto.PeerEndpointsResp:
+		case qswitch.PeerEndpointsResp:
 			log.Printf("Received %d peer endpoints from server", len(m.Entries))
 			p.handleInitialEndpoints(m.Entries)
-		case proto.NewPeerEndpointNotif:
+		case qswitch.NewPeerEndpointNotif:
 			log.Printf("New peer endpoint: id=%d", m.Entry.PeerID)
 			p.handleNewEndpoint(m.Entry)
-		case proto.NetworkChangeNotif:
+		case qswitch.NetworkChangeNotif:
 			handleNetworkChangeNotification(p, m)
 		default:
 			log.Printf("Unexpected message on control stream: %T", m)
@@ -100,7 +100,7 @@ func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) 
 	}
 }
 
-func handleNetworkChangeNotification(p *Peer, n proto.NetworkChangeNotif) {
+func handleNetworkChangeNotification(p *Peer, n qswitch.NetworkChangeNotif) {
 	oldA := net.JoinHostPort(n.OldAddress.IP.String(), fmt.Sprintf("%d", n.OldAddress.Port))
 	newA := net.JoinHostPort(n.NewAddress.IP.String(), fmt.Sprintf("%d", n.NewAddress.Port))
 	log.Printf("Received network change notification - Peer: %d, %s -> %s", n.PeerID, oldA, newA)

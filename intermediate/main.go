@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/kota-yata/p2p-quic-migration/shared"
-	proto "github.com/kota-yata/p2p-quic-migration/shared/cmp9protocol"
+	"github.com/kota-yata/p2p-quic-migration/shared/qswitch"
 	"github.com/quic-go/quic-go"
 )
 
@@ -104,7 +104,7 @@ func (pr *PeerRegistry) AddNotificationStream(id uint32, stream *quic.Stream) {
 	log.Printf("Added notification stream for peer %s", id)
 }
 
-func (pr *PeerRegistry) handleNetworkChange(req proto.NetworkChangeReq, peerID uint32, conn *quic.Conn) {
+func (pr *PeerRegistry) handleNetworkChange(req qswitch.NetworkChangeReq, peerID uint32, conn *quic.Conn) {
 	oldAddrStr := addrToString(req.OldAddress)
 	observedAddr := conn.RemoteAddr().String()
 
@@ -141,8 +141,8 @@ func (pr *PeerRegistry) notifyPeersAboutNetworkChange(changedPeerID uint32, oldA
 				log.Printf("encode new addr: %v", err)
 				return
 			}
-			msg := proto.NetworkChangeNotif{PeerID: changedPeerID, OldAddress: oldA, NewAddress: newA}
-			if err := proto.WriteMessage(stream, msg); err != nil {
+			msg := qswitch.NetworkChangeNotif{PeerID: changedPeerID, OldAddress: oldA, NewAddress: newA}
+			if err := qswitch.WriteMessage(stream, msg); err != nil {
 				log.Printf("Failed to send network change notification to %s: %v", peerID, err)
 				return
 			}
@@ -163,18 +163,18 @@ func (pr *PeerRegistry) SetLocalAddr(peerID uint32, local string) {
 }
 
 // BuildPeerEndpoint builds a PeerEndpoint for the given id.
-func (pr *PeerRegistry) BuildPeerEndpoint(id uint32) (proto.PeerEndpoint, bool) {
+func (pr *PeerRegistry) BuildPeerEndpoint(id uint32) (qswitch.PeerEndpoint, bool) {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
 	info, ok := pr.peers[id]
 	if !ok {
-		return proto.PeerEndpoint{}, false
+		return qswitch.PeerEndpoint{}, false
 	}
 	obs, err := parseAddrString(info.Address)
 	if err != nil {
-		return proto.PeerEndpoint{}, false
+		return qswitch.PeerEndpoint{}, false
 	}
-	ep := proto.PeerEndpoint{PeerID: id, Flags: 0, Observed: obs}
+	ep := qswitch.PeerEndpoint{PeerID: id, Flags: 0, Observed: obs}
 	if l, ok := pr.localAddrs[id]; ok && l != "" {
 		if la, err := parseAddrString(l); err == nil {
 			ep.Flags |= 0x01
@@ -185,7 +185,7 @@ func (pr *PeerRegistry) BuildPeerEndpoint(id uint32) (proto.PeerEndpoint, bool) 
 }
 
 // BuildAllEndpoints creates endpoint entries for all peers except excludeID (if non-zero).
-func (pr *PeerRegistry) BuildAllEndpoints(excludeID uint32) []proto.PeerEndpoint {
+func (pr *PeerRegistry) BuildAllEndpoints(excludeID uint32) []qswitch.PeerEndpoint {
 	pr.mu.RLock()
 	ids := make([]uint32, 0, len(pr.peers))
 	for id := range pr.peers {
@@ -196,7 +196,7 @@ func (pr *PeerRegistry) BuildAllEndpoints(excludeID uint32) []proto.PeerEndpoint
 	}
 	pr.mu.RUnlock()
 
-	out := make([]proto.PeerEndpoint, 0, len(ids))
+	out := make([]qswitch.PeerEndpoint, 0, len(ids))
 	for _, id := range ids {
 		if ep, ok := pr.BuildPeerEndpoint(id); ok {
 			out = append(out, ep)
@@ -264,7 +264,7 @@ func handleConnection(conn *quic.Conn) {
 	registry.AddNotificationStream(peerID, ctrl)
 
 	if addr, err := parseAddrString(conn.RemoteAddr().String()); err == nil {
-		_ = proto.WriteMessage(ctrl, proto.ObservedAddr{Observed: addr})
+		_ = qswitch.WriteMessage(ctrl, qswitch.ObservedAddr{Observed: addr})
 		log.Printf("Sent ObservedAddr to peer %d: %s", peerID, conn.RemoteAddr().String())
 	} else {
 		log.Printf("Failed to encode ObservedAddr for %d: %v", peerID, err)
@@ -288,7 +288,7 @@ func controlLoop(stream *quic.Stream, conn *quic.Conn, peerID uint32) {
 	defer stream.Close()
 
 	for {
-		msg, err := proto.ReadMessage(stream)
+		msg, err := qswitch.ReadMessage(stream)
 		if err != nil {
 			if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
 				log.Printf("Control stream closed by peer %d", peerID)
@@ -298,7 +298,7 @@ func controlLoop(stream *quic.Stream, conn *quic.Conn, peerID uint32) {
 			return
 		}
 		switch m := msg.(type) {
-		case proto.SelfAddrsSet:
+		case qswitch.SelfAddrsSet:
 			if m.HasLocal {
 				localStr := addrToString(m.Local)
 				registry.SetLocalAddr(peerID, localStr)
@@ -314,18 +314,18 @@ func controlLoop(stream *quic.Stream, conn *quic.Conn, peerID uint32) {
 					if otherID == peerID {
 						continue
 					}
-					_ = proto.WriteMessage(s, proto.NewPeerEndpointNotif{Entry: ep})
+					_ = qswitch.WriteMessage(s, qswitch.NewPeerEndpointNotif{Entry: ep})
 				}
 				registry.mu.RUnlock()
 			}
-		case proto.GetPeerEndpointsReq:
+		case qswitch.GetPeerEndpointsReq:
 			entries := registry.BuildAllEndpoints(peerID)
-			if err := proto.WriteMessage(stream, proto.PeerEndpointsResp{Entries: entries}); err != nil {
+			if err := qswitch.WriteMessage(stream, qswitch.PeerEndpointsResp{Entries: entries}); err != nil {
 				log.Printf("Failed to write PeerEndpointsResp: %v", err)
 				return
 			}
 			log.Printf("Sent %d endpoints to peer %d", len(entries), peerID)
-		case proto.NetworkChangeReq:
+		case qswitch.NetworkChangeReq:
 			registry.handleNetworkChange(m, peerID, conn)
 		default:
 			log.Printf("Unhandled message on control stream from %d: %T", peerID, m)
@@ -337,7 +337,7 @@ func controlLoop(stream *quic.Stream, conn *quic.Conn, peerID uint32) {
 func handleNonControlStream(stream *quic.Stream, conn *quic.Conn, peerID uint32) {
 	defer stream.Close()
 
-	msg, err := proto.ReadMessage(stream)
+	msg, err := qswitch.ReadMessage(stream)
 	if err != nil {
 		if err.Error() == "EOF" || strings.Contains(err.Error(), "use of closed network connection") {
 			log.Printf("Stream closed by peer %d before first message", peerID)
@@ -348,7 +348,7 @@ func handleNonControlStream(stream *quic.Stream, conn *quic.Conn, peerID uint32)
 	}
 
 	switch m := msg.(type) {
-	case proto.NetworkChangeReq:
+	case qswitch.NetworkChangeReq:
 		// Allow network change notifications on non-control streams as well
 		registry.handleNetworkChange(m, peerID, conn)
 		return
@@ -359,9 +359,8 @@ func handleNonControlStream(stream *quic.Stream, conn *quic.Conn, peerID uint32)
 	}
 }
 
-// helper: parse "host:port" into protocol Address
-func parseAddrString(s string) (proto.Address, error) {
-	var out proto.Address
+func parseAddrString(s string) (qswitch.Address, error) {
+	var out qswitch.Address
 	host, portStr, err := net.SplitHostPort(s)
 	if err != nil {
 		return out, err
@@ -377,13 +376,13 @@ func parseAddrString(s string) (proto.Address, error) {
 		return out, err
 	}
 	if ip.To4() != nil {
-		out = proto.Address{AF: 0x04, IP: ip.To4(), Port: portU16}
+		out = qswitch.Address{AF: 0x04, IP: ip.To4(), Port: portU16}
 	} else {
-		out = proto.Address{AF: 0x06, IP: ip.To16(), Port: portU16}
+		out = qswitch.Address{AF: 0x06, IP: ip.To16(), Port: portU16}
 	}
 	return out, nil
 }
 
-func addrToString(a proto.Address) string {
+func addrToString(a qswitch.Address) string {
 	return net.JoinHostPort(a.IP.String(), fmt.Sprintf("%d", a.Port))
 }

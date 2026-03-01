@@ -10,7 +10,7 @@ import (
 	"time"
 
 	network_monitor "github.com/kota-yata/p2p-quic-migration/peer/network"
-	proto "github.com/kota-yata/p2p-quic-migration/shared/cmp9protocol"
+	"github.com/kota-yata/p2p-quic-migration/shared/qswitch"
 	"github.com/quic-go/quic-go"
 )
 
@@ -67,7 +67,7 @@ func (p *Peer) sendRelayAllowlistUpdate() error {
 	if err := p.openRelayAllowStream(); err != nil {
 		return err
 	}
-	addrs := make([]proto.Address, 0, len(p.endpoints)*2)
+	addrs := make([]qswitch.Address, 0, len(p.endpoints)*2)
 	for _, ep := range p.endpoints {
 		if a, ok := toProtoAddr(ep.observed); ok {
 			addrs = append(addrs, a)
@@ -83,8 +83,8 @@ func (p *Peer) sendRelayAllowlistUpdate() error {
 			}
 		}
 	}
-	msg := proto.RelayAllowlistSet{Addresses: addrs}
-	if err := proto.WriteMessage(p.relayAllowStream, msg); err != nil {
+	msg := qswitch.RelayAllowlistSet{Addresses: addrs}
+	if err := qswitch.WriteMessage(p.relayAllowStream, msg); err != nil {
 		return err
 	}
 	return nil
@@ -243,7 +243,7 @@ func (p *Peer) handleIncomingConnection(conn *quic.Conn) {
 	handleCommunicationAsAcceptor(conn, p.config.role)
 }
 
-func (p *Peer) handleInitialEndpoints(entries []proto.PeerEndpoint) {
+func (p *Peer) handleInitialEndpoints(entries []qswitch.PeerEndpoint) {
 	for _, e := range entries {
 		peerObs := net.JoinHostPort(e.Observed.IP.String(), fmt.Sprintf("%d", e.Observed.Port))
 		var peerLoc string
@@ -259,7 +259,7 @@ func (p *Peer) handleInitialEndpoints(entries []proto.PeerEndpoint) {
 	}
 }
 
-func (p *Peer) handleNewEndpoint(e proto.PeerEndpoint) {
+func (p *Peer) handleNewEndpoint(e qswitch.PeerEndpoint) {
 	peerObs := net.JoinHostPort(e.Observed.IP.String(), fmt.Sprintf("%d", e.Observed.Port))
 	var peerLoc string
 	if e.Flags&0x01 != 0 {
@@ -319,7 +319,7 @@ func (p *Peer) switchToAudioRelay(targetPeerID uint32) error {
 		return fmt.Errorf("failed to open audio relay stream: %v", err)
 	}
 
-	if err := proto.WriteMessage(stream, proto.AudioRelayReq{TargetPeerID: targetPeerID}); err != nil {
+	if err := qswitch.WriteMessage(stream, qswitch.AudioRelayReq{TargetPeerID: targetPeerID}); err != nil {
 		stream.Close()
 		return fmt.Errorf("failed to send audio relay request: %v", err)
 	}
@@ -477,7 +477,7 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 		return p.intermediateConn.Context().Err()
 	}
 
-	addr := proto.Address{}
+	addr := qswitch.Address{}
 	if oldAddr.To4() != nil {
 		addr.AF = 0x04
 		addr.IP = oldAddr.To4()
@@ -487,7 +487,7 @@ func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
 		addr.IP = oldAddr.To16()
 		addr.Port = 0
 	}
-	if err := proto.WriteMessage(p.intermediateStream, proto.NetworkChangeReq{OldAddress: addr}); err != nil {
+	if err := qswitch.WriteMessage(p.intermediateStream, qswitch.NetworkChangeReq{OldAddress: addr}); err != nil {
 		return fmt.Errorf("write attempt failed: %w", err)
 	}
 	log.Printf("Sent server network change notification to intermediate server")
@@ -541,8 +541,8 @@ func ipEqual(a, b net.IP) bool {
 	return a.Equal(b)
 }
 
-func toProtoAddr(addrStr string) (proto.Address, bool) {
-	var zero proto.Address
+func toProtoAddr(addrStr string) (qswitch.Address, bool) {
+	var zero qswitch.Address
 	host, portStr, err := net.SplitHostPort(addrStr)
 	if err != nil {
 		return zero, false
@@ -560,9 +560,9 @@ func toProtoAddr(addrStr string) (proto.Address, bool) {
 		return zero, false
 	}
 	if ip.To4() != nil {
-		return proto.Address{AF: 0x04, IP: ip.To4(), Port: portNum}, true
+		return qswitch.Address{AF: 0x04, IP: ip.To4(), Port: portNum}, true
 	}
-	return proto.Address{AF: 0x06, IP: ip.To16(), Port: portNum}, true
+	return qswitch.Address{AF: 0x06, IP: ip.To16(), Port: portNum}, true
 }
 
 func (p *Peer) startHolePunchingCandidates(candidates []string) {

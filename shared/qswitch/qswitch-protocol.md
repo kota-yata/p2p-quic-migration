@@ -1,4 +1,4 @@
-Cmp9 defines compact binary control messages exchanged between Peer and Server. In this deployment, the Intermediate Server also serves the Relay role; audio relay reuses the same QUIC connection to the server.
+QSwitch defines compact binary control messages exchanged between Peer and Server.
 
 ## Message Framing
 - Header:

@@ -1,4 +1,4 @@
-package cmp9protocol
+package qswitch
 
 import (
 	"encoding/binary"
