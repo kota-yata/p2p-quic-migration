@@ -173,7 +173,6 @@ func (p *Peer) setupTransport() error {
 	p.intermediateTransport = &quic.Transport{
 		Conn: p.intermediateUdpConn,
 	}
-	// Relay uses the same transport
 
 	return nil
 }
@@ -330,6 +329,7 @@ func (p *Peer) switchToAudioRelay(targetPeerID uint32) error {
 	return nil
 }
 
+// Migrate intermediate and relay connections, then notify network change.
 func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 	log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
 
@@ -344,7 +344,6 @@ func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
 	}
 	log.Printf("Successfully migrated server connection to new address: %s", newAddr)
 
-	// Also migrate the relay connection
 	if p.relayConn != nil {
 		if err := p.migrateRelayConnection(newAddr); err != nil {
 			log.Printf("Failed to migrate relay connection: %v", err)
@@ -510,7 +509,8 @@ func (p *Peer) acceptRelayStreams() {
 	}
 }
 
-// Helpers for endpoint handling
+// Return a list of candidate. If we are on the same global segment as the peer, include their local address as a candidate.
+// Otherwise just return the observed address.
 func (p *Peer) buildCandidates(peerObserved, peerLocal string, hasLocal bool) []string {
 	// Decide if we are on the same global segment (observed IP match)
 	if p.ownObservedIP != nil && hasLocal {
