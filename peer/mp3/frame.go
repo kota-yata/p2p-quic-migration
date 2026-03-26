@@ -1,9 +1,12 @@
 package mp3
 
+// MPEG-1 Layer III frame parser
+
 import (
 	"bufio"
 	"fmt"
 	"io"
+	"log"
 	"os"
 )
 
@@ -15,7 +18,7 @@ type MP3Frame struct {
 	flag2 byte
 	// CRC16 value read from the frame (if present)
 	crcValue [2]byte
-	// CRC16 target bytes that is used to calculate and compare with crcValue
+	// Bytes covered by MPEG audio CRC: header bytes 3-4 and Layer III side info
 	crcTarget []byte
 }
 
@@ -30,6 +33,7 @@ func OpenMP3File(path string) (io.ReadCloser, error) {
 func ReadHeader(h *MP3Frame, reader *bufio.Reader) error {
 	var b byte
 	var err error
+	*h = MP3Frame{} // reset frame state
 	for {
 		b, err = reader.ReadByte()
 		if err != nil {
@@ -46,23 +50,30 @@ func ReadHeader(h *MP3Frame, reader *bufio.Reader) error {
 		}
 		// sync bit is 11 bits, check the last 3 bits to confirm
 		if b&0xE0 != 0xE0 {
+			// back off one byte because it might be the start of the next frame or an ID3 tag
+			if err := reader.UnreadByte(); err != nil {
+				return err
+			}
 			continue
 		}
 		// version check
 		switch (b >> 3) & 0x03 {
-		case 0x10: // MPEG Version 2.0
-		case 0x11: // MPEG Version 1.0
-			h.flag1 |= 1 << 7 // set msb to indicate MPEG1
-		default: // no support for MPEG Version 2.5 at this time
+		case 0b11: // MPEG Version 1.0
+			h.flag1 |= 1 << 7 // set msb of flag1 to indicate MPEG1
+		default:
+			// ignore MPEG Version 2/2.5 at this point
 			return fmt.Errorf("unsupported MPEG version %02x", (b>>3)&0x03)
 		}
 		// at this time we only support Layer III
 		if (b >> 1 & 0x03) != 0x01 {
 			return fmt.Errorf("unsupported layer, only Layer III (MP3) is supported")
 		}
-		protectionBit := b & 0x01
-		hasCRC := protectionBit == 0
-		h.flag1 |= protectionBit << 6 // set protection bit
+		log.Printf("Found potential MP3 frame header: %02x %02x", 0xFF, b)
+		// read protection bit, 0 means CRC is present, 1 means no CRC
+		pBit := b & 0x01
+		hasCRC := pBit == 0
+		log.Printf("Protection bit: %d (has CRC: %v)", pBit, hasCRC)
+		h.flag1 |= pBit << 6 // set protection bit
 
 		b, err = reader.ReadByte()
 		if err != nil {
@@ -72,7 +83,7 @@ func ReadHeader(h *MP3Frame, reader *bufio.Reader) error {
 			h.crcTarget = make([]byte, 2)
 			h.crcTarget[0] = b
 		}
-
+		log.Printf("Bitrate index: %d", (b>>4)&0x0F)
 		bitrateIndex := (b >> 4) & 0x0F
 		if bitrateIndex == 0x0F {
 			return fmt.Errorf("invalid bitrate index: bad")
@@ -87,14 +98,19 @@ func ReadHeader(h *MP3Frame, reader *bufio.Reader) error {
 
 		h.flag2 |= ((b >> 1) & 0x01) << 1 // set padding bit
 
+		// the remaining one bit is private bit, we ignore it
+
 		b, err = reader.ReadByte()
 		if err != nil {
 			return err
 		}
+		log.Printf("Sample rate index: %d", (b>>2)&0x03)
 		if hasCRC {
 			h.crcTarget[1] = b
 		}
 		h.flag2 |= (b >> 6) & 0x03 // set channel mode
+
+		// TODO: Mode extension, copyright, original, emphasis bits are ignored for now
 
 		if hasCRC {
 			_, err := io.ReadFull(reader, h.crcValue[:])
