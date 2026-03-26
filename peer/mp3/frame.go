@@ -108,7 +108,10 @@ func ReadHeader(h *MP3Frame, reader *bufio.Reader) error {
 		if hasCRC {
 			h.crcTarget[1] = b
 		}
-		h.flag2 |= (b >> 6) & 0x03 // set channel mode
+		// set channel mode
+		// 00 = Stereo, 01 = Joint stereo (Stereo), 10 = Dual channel (Stereo), 11 = Single channel (Mono)
+		h.flag2 |= (b >> 6) & 0x03
+		log.Printf("Channel mode: %02b", (b>>6)&0x03)
 
 		// TODO: Mode extension, copyright, original, emphasis bits are ignored for now
 
