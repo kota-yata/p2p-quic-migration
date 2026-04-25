@@ -58,7 +58,7 @@ func (pr *PeerRegistry) AddPeer(addr net.Addr, conn *quic.Conn) uint32 {
 	pr.peers[id] = peerInfo
 	pr.connections[id] = conn
 	pr.connIndex[conn.RemoteAddr().String()] = id
-	log.Printf("Added peer %s with address %s", id, addr.String())
+	log.Printf("Added peer %d with address %s", id, addr.String())
 
 	return id
 }
@@ -84,7 +84,7 @@ func (pr *PeerRegistry) RemovePeer(id uint32) {
 				break
 			}
 		}
-		log.Printf("Removed peer %s", id)
+		log.Printf("Removed peer %d", id)
 	}
 }
 
@@ -101,7 +101,7 @@ func (pr *PeerRegistry) AddNotificationStream(id uint32, stream *quic.Stream) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 	pr.notificationStreams[id] = stream
-	log.Printf("Added notification stream for peer %s", id)
+	log.Printf("Added notification stream for peer %d", id)
 }
 
 func (pr *PeerRegistry) handleNetworkChange(req qswitch.NetworkChangeReq, peerID uint32, conn *quic.Conn) {
