@@ -1,3 +1,5 @@
+//go:build connection_migration
+
 package main
 
 import (
@@ -169,7 +171,7 @@ func (a *app) migrateIntermediateConnection(newAddr net.IP) error {
 	path, err := a.conn.AddPath(newTransport)
 	if err != nil {
 		newUDP.Close()
-		return fmt.Errorf("failed to add new path: %v")
+		return fmt.Errorf("failed to add new path: %v", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
