@@ -1,3 +1,5 @@
+//go:build network_monitor_standalone
+
 package main
 
 import (
