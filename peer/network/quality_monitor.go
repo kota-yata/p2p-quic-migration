@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	defaultQualitySampleInterval = 500 * time.Millisecond
+	defaultQualitySampleInterval = 200 * time.Millisecond
 	defaultDegradedRSSI          = -75
 	defaultRecoveredRSSI         = -67
 	defaultRapidDropWindow       = 5 * time.Second
@@ -43,13 +43,7 @@ type QualityEvent struct {
 
 type QualityProvider interface {
 	Snapshot() (QualitySnapshot, error)
-}
-
-type QualityEventSource interface {
-	QualityProvider
-	Start() error
 	Close() error
-	ReceiveEvent() (QualityEvent, error)
 }
 
 type QualityMonitorConfig struct {
@@ -121,16 +115,9 @@ func (qm *QualityMonitor) Start() error {
 	if qm.provider == nil {
 		return fmt.Errorf("no quality provider configured")
 	}
-	if source, ok := qm.provider.(QualityEventSource); ok {
-		if err := source.Start(); err != nil {
-			return err
-		}
-	}
 	initial, err := qm.provider.Snapshot()
 	if err != nil {
-		if source, ok := qm.provider.(QualityEventSource); ok {
-			_ = source.Close()
-		}
+		_ = qm.provider.Close()
 		return fmt.Errorf("failed to get initial quality snapshot: %w", err)
 	}
 	qm.mu.Lock()
@@ -140,11 +127,6 @@ func (qm *QualityMonitor) Start() error {
 
 	log.Printf("Quality monitor started on %s ip=%s rssi=%ddBm link=%d available=%t",
 		initial.Interface, initial.IP, initial.RSSIDBm, initial.Link, initial.Available)
-
-	if source, ok := qm.provider.(QualityEventSource); ok {
-		go qm.monitorEventLoop(source)
-		return nil
-	}
 
 	go qm.monitorLoop()
 	return nil
@@ -162,10 +144,8 @@ func (qm *QualityMonitor) Stop() {
 	default:
 		close(qm.stopChan)
 	}
-	if source, ok := qm.provider.(QualityEventSource); ok {
-		_ = source.Close()
-	}
 	<-qm.doneChan
+	_ = qm.provider.Close()
 }
 
 func (qm *QualityMonitor) monitorLoop() {
@@ -187,33 +167,6 @@ func (qm *QualityMonitor) monitorLoop() {
 			}
 		case <-qm.stopChan:
 			return
-		}
-	}
-}
-
-func (qm *QualityMonitor) monitorEventLoop(source QualityEventSource) {
-	defer close(qm.doneChan)
-
-	for {
-		select {
-		case <-qm.stopChan:
-			return
-		default:
-		}
-
-		evt, err := source.ReceiveEvent()
-		if err != nil {
-			select {
-			case <-qm.stopChan:
-				return
-			default:
-				log.Printf("Quality monitor event receive failed: %v", err)
-				time.Sleep(250 * time.Millisecond)
-				continue
-			}
-		}
-		if qm.onEvent != nil {
-			qm.onEvent(evt)
 		}
 	}
 }

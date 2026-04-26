@@ -16,3 +16,7 @@ func NewDefaultQualityProvider() QualityProvider {
 func (unsupportedQualityProvider) Snapshot() (QualitySnapshot, error) {
 	return QualitySnapshot{Available: false, Time: time.Now()}, fmt.Errorf("wireless quality provider is only implemented on linux/android")
 }
+
+func (unsupportedQualityProvider) Close() error {
+	return nil
+}
