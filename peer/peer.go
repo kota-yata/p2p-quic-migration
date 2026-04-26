@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -37,7 +36,10 @@ type Peer struct {
 	relayAllowStream      *quic.Stream
 	relayTransport        *quic.Transport
 	relayUdpConn          *net.UDPConn
-	qualityMonitor        *network_monitor.QualityMonitor
+	candidateManager      *candidatePairManager
+	pathCandidateManager  *candidatePairManager
+	candidateProbeStop    chan struct{}
+	quicCandidatePaths    map[string]*quicCandidatePath
 	endpoints             map[uint32]endpointInfo
 	ownObservedIP         net.IP
 	audioRelayStop        func()
@@ -46,10 +48,11 @@ type Peer struct {
 	hpCancels []context.CancelFunc
 }
 
-type localIPCandidate struct {
-	iface string
-	ip    net.IP
-	score int
+type quicCandidatePath struct {
+	path      *quic.Path
+	udp       *net.UDPConn
+	transport *quic.Transport
+	oldIP     net.IP
 }
 
 type endpointInfo struct {
@@ -136,7 +139,7 @@ func (p *Peer) Run() error {
 	p.intermediateStream = stream
 	go IntermediateControlReadLoop(intermediateConn, p, stream)
 	go p.acceptRelayStreams()
-	p.startQualityMonitor()
+	p.startCandidatePairEvaluator()
 	go p.monitorHolepunch()
 
 	return p.runPeerListener()
@@ -202,8 +205,8 @@ func (p *Peer) cleanup() {
 	if p.relayUdpConn != nil {
 		p.relayUdpConn.Close()
 	}
-	if p.qualityMonitor != nil {
-		p.qualityMonitor.Stop()
+	if p.candidateProbeStop != nil {
+		close(p.candidateProbeStop)
 	}
 }
 
@@ -255,8 +258,8 @@ func (p *Peer) handleInitialEndpoints(entries []qswitch.PeerEndpoint) {
 			peerLoc = net.JoinHostPort(e.Local.IP.String(), fmt.Sprintf("%d", e.Local.Port))
 		}
 		p.endpoints[e.PeerID] = endpointInfo{observed: peerObs, local: peerLoc, hasLocal: e.Flags&0x01 != 0}
-		candidates := p.buildCandidates(peerObs, peerLoc, e.Flags&0x01 != 0)
-		p.startHolePunchingCandidates(candidates)
+		p.registerPeerEndpointCandidates(e)
+		p.startHolePunchingCandidates()
 	}
 	if err := p.sendRelayAllowlistUpdate(); err != nil {
 		log.Printf("Failed to send relay allowlist after initial endpoints: %v", err)
@@ -270,8 +273,8 @@ func (p *Peer) handleNewEndpoint(e qswitch.PeerEndpoint) {
 		peerLoc = net.JoinHostPort(e.Local.IP.String(), fmt.Sprintf("%d", e.Local.Port))
 	}
 	p.endpoints[e.PeerID] = endpointInfo{observed: peerObs, local: peerLoc, hasLocal: e.Flags&0x01 != 0}
-	candidates := p.buildCandidates(peerObs, peerLoc, e.Flags&0x01 != 0)
-	p.startHolePunchingCandidates(candidates)
+	p.registerPeerEndpointCandidates(e)
+	p.startHolePunchingCandidates()
 	if err := p.sendRelayAllowlistUpdate(); err != nil {
 		log.Printf("Failed to send relay allowlist after new endpoint: %v", err)
 	}
@@ -310,7 +313,8 @@ func (p *Peer) HandleNetworkChange(peerID uint32, oldAddr, newAddr string) {
 	}
 
 	log.Printf("Starting new hole punching to updated address: %s", newAddr)
-	p.startHolePunchingCandidates([]string{newAddr})
+	p.registerRemoteEndpointCandidate(newAddr, candidateTypeSrflx, peerID, false)
+	p.startHolePunchingCandidates()
 }
 
 func (p *Peer) switchToAudioRelay(targetPeerID uint32) error {
@@ -338,7 +342,6 @@ func (p *Peer) switchToAudioRelay(targetPeerID uint32) error {
 // cancels outstanding hole punching attempts, and hands off to the proper handler.
 func (p *Peer) monitorHolepunch() {
 	for evt := range connectionEstablished {
-		// cancel any in-flight hole punching attempts
 		for _, c := range p.hpCancels {
 			c()
 		}
@@ -347,176 +350,233 @@ func (p *Peer) monitorHolepunch() {
 		if evt.isAcceptor {
 			p.handleIncomingConnection(evt.conn)
 		} else {
-			// Use remote addr for logging context
 			peerAddr := evt.conn.RemoteAddr().String()
 			handleCommunicationAsInitiator(evt.conn, peerAddr, p.config.role)
 		}
 	}
 }
 
-func (p *Peer) startQualityMonitor() {
-	qm := network_monitor.NewQualityMonitor(p.onQualityEvent)
-	if err := qm.Start(); err != nil {
-		log.Printf("Quality monitor disabled: %v", err)
+func (p *Peer) ensureCandidateManagers() {
+	if p.candidateManager == nil {
+		p.candidateManager = newCandidatePairManager()
+	}
+	if p.pathCandidateManager == nil {
+		p.pathCandidateManager = newCandidatePairManager()
+	}
+	if p.quicCandidatePaths == nil {
+		p.quicCandidatePaths = make(map[string]*quicCandidatePath)
+	}
+}
+
+func (p *Peer) startCandidatePairEvaluator() {
+	p.ensureCandidateManagers()
+	p.registerQUICRemoteCandidate("intermediate", p.config.serverAddr, candidateTypeHost)
+	p.registerQUICRemoteCandidate("relay", p.config.relayAddr, candidateTypeRelay)
+	p.refreshLocalCandidates()
+
+	p.candidateProbeStop = make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(candidatePairProbeInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				p.evaluateCandidatePairs()
+			case <-p.candidateProbeStop:
+				return
+			}
+		}
+	}()
+}
+
+func (p *Peer) registerQUICRemoteCandidate(label, addr string, typ candidateType) {
+	candidate, ok := remoteCandidateFromEndpoint(0, addr, typ, false)
+	if !ok {
 		return
 	}
-	p.qualityMonitor = qm
+	candidate.ID = "quic/" + label + "/" + addr
+	p.pathCandidateManager.upsertRemoteCandidate(candidate)
 }
 
-func (p *Peer) onQualityEvent(evt network_monitor.QualityEvent) {
-	log.Printf("Wireless link degraded on %s ip=%s rssi=%ddBm reason=%s",
-		evt.Current.Interface, evt.Current.IP, evt.Current.RSSIDBm, evt.Reason)
-	go p.handleLinkDegraded(evt)
+func (p *Peer) registerPeerEndpointCandidates(e qswitch.PeerEndpoint) {
+	p.ensureCandidateManagers()
+	preferLocal := false
+	if p.ownObservedIP != nil && e.Flags&0x01 != 0 {
+		preferLocal = sameIPFamily(e.Observed.IP, p.ownObservedIP) && ipEqual(e.Observed.IP, p.ownObservedIP)
+	}
+	for _, candidate := range remoteCandidatesFromPeerEndpoint(e, preferLocal) {
+		p.candidateManager.upsertRemoteCandidate(candidate)
+	}
+	p.refreshLocalCandidates()
 }
 
-func (p *Peer) handleLinkDegraded(evt network_monitor.QualityEvent) {
+func (p *Peer) registerRemoteEndpointCandidate(addr string, typ candidateType, peerID uint32, isLocal bool) {
+	p.ensureCandidateManagers()
+	candidate, ok := remoteCandidateFromEndpoint(peerID, addr, typ, isLocal)
+	if !ok {
+		return
+	}
+	p.candidateManager.upsertRemoteCandidate(candidate)
+	p.refreshLocalCandidates()
+}
+
+func (p *Peer) refreshLocalCandidates() {
+	candidates, err := discoverLocalCandidates()
+	if err != nil {
+		log.Printf("Failed to discover local candidates: %v", err)
+		return
+	}
+	p.candidateManager.setLocalCandidates(candidates)
+	p.pathCandidateManager.setLocalCandidates(candidates)
+}
+
+func (p *Peer) evaluateCandidatePairs() {
 	p.migrationMu.Lock()
 	defer p.migrationMu.Unlock()
 
-	if err := p.migrateAfterDegradationLocked(evt.Current.Interface, evt.Current.IP); err != nil {
-		log.Printf("Failed to migrate after degradation: %v", err)
+	if p.intermediateConn == nil || p.intermediateConn.Context().Err() != nil {
+		return
+	}
+	p.refreshLocalCandidates()
+
+	now := time.Now()
+	for _, pair := range p.pathCandidateManager.pairs {
+		if pair.State == candidatePairFailed || pair.Remote.Type == candidateTypeRelay && p.relayConn == nil {
+			continue
+		}
+		p.probeQUICCandidatePath(pair)
+	}
+
+	best := p.bestIntermediatePathCandidate(now)
+	if best == nil {
+		return
+	}
+	if p.pathCandidateManager.selected == nil {
+		p.pathCandidateManager.selectPair(best)
+		return
+	}
+	if !shouldRenominate(p.pathCandidateManager.selected, best, now) {
+		return
+	}
+	if err := p.switchToQUICCandidatePair(best); err != nil {
+		log.Printf("Failed to switch selected candidate pair %s: %v", best.ID, err)
 		return
 	}
 }
 
-func (p *Peer) migrateAfterDegradationLocked(currentIface string, currentIP net.IP) error {
-	if p.intermediateConn == nil {
-		return fmt.Errorf("no intermediate connection available")
-	}
-
-	candidates, err := candidateLocalIPs(currentIface, currentIP)
-	if err != nil {
-		return err
-	}
-	for _, candidate := range candidates {
-		log.Printf("Selected backup interface %s ip=%s for degraded %s ip=%s",
-			candidate.iface, candidate.ip, currentIface, currentIP)
-		if err := p.migrateConnectionsToCandidate(candidate); err != nil {
-			log.Printf("Migration attempt failed via %s ip=%s: %v", candidate.iface, candidate.ip, err)
+func (p *Peer) bestIntermediatePathCandidate(now time.Time) *candidatePair {
+	var best *candidatePair
+	for _, pair := range p.pathCandidateManager.pairs {
+		if pair.State != candidatePairSucceeded || !strings.HasPrefix(pair.Remote.ID, "quic/intermediate/") {
 			continue
 		}
-		if err := p.sendNetworkChangeNotification(currentIP); err != nil {
-			return fmt.Errorf("failed to notify network change after migration: %w", err)
+		if best == nil || pair.qualityScore(now) > best.qualityScore(now) {
+			best = pair
 		}
-		if err := p.sendRelayAllowlistUpdate(); err != nil {
-			log.Printf("Failed to refresh relay allowlist after migration: %v", err)
-		}
-		log.Printf("Migrated degraded link to %s ip=%s", candidate.iface, candidate.ip)
-		return nil
 	}
-	return fmt.Errorf("no alternate interface passed path validation")
+	return best
 }
 
-func (p *Peer) migrateConnectionsToCandidate(candidate localIPCandidate) error {
-	intermediateUDP, intermediateTransport, err := p.migrateQUICConnection(p.intermediateConn, candidate, "intermediate")
+func (p *Peer) probeQUICCandidatePath(pair *candidatePair) {
+	label := "intermediate"
+	conn := p.intermediateConn
+	if strings.HasPrefix(pair.Remote.ID, "quic/relay/") {
+		label = "relay"
+		conn = p.relayConn
+	}
+	if conn == nil || conn.Context().Err() != nil {
+		return
+	}
+
+	qp := p.quicCandidatePaths[pair.ID]
+	if qp == nil {
+		udp, err := listenUDPOnInterface(pair.Local.Iface, pair.Local.IP)
+		if err != nil {
+			log.Printf("Failed to create %s candidate path via %s ip=%s: %v", label, pair.Local.Iface, pair.Local.IP, err)
+			p.pathCandidateManager.recordFailure(pair.ID)
+			return
+		}
+		transport := &quic.Transport{Conn: udp}
+		path, err := conn.AddPath(transport)
+		if err != nil {
+			transport.Close()
+			udp.Close()
+			log.Printf("Failed to add %s candidate path via %s ip=%s: %v", label, pair.Local.Iface, pair.Local.IP, err)
+			p.pathCandidateManager.recordFailure(pair.ID)
+			return
+		}
+		oldIP := net.IP(nil)
+		if p.pathCandidateManager.selected != nil {
+			oldIP = p.pathCandidateManager.selected.Local.IP
+		}
+		qp = &quicCandidatePath{path: path, udp: udp, transport: transport, oldIP: oldIP}
+		p.quicCandidatePaths[pair.ID] = qp
+	}
+
+	previousState := pair.State
+	pair.State = candidatePairInProgress
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	start := time.Now()
+	err := qp.path.Probe(ctx)
+	cancel()
 	if err != nil {
+		log.Printf("Probe failed for %s candidate pair %s: %v", label, pair.ID, err)
+		p.pathCandidateManager.recordFailure(pair.ID)
+		if pair.ResponseCnt > 0 {
+			pair.State = previousState
+		}
+		return
+	}
+	p.pathCandidateManager.recordSuccess(pair.ID, time.Since(start), time.Now())
+}
+
+func (p *Peer) switchToQUICCandidatePair(best *candidatePair) error {
+	qp := p.quicCandidatePaths[best.ID]
+	if qp == nil {
+		return fmt.Errorf("candidate path %s is not available", best.ID)
+	}
+	if err := qp.path.Switch(); err != nil {
 		return err
 	}
-	p.intermediateTransport = intermediateTransport
-	p.intermediateUdpConn = intermediateUDP
 
-	if p.relayConn != nil {
-		relayUDP, relayTransport, err := p.migrateQUICConnection(p.relayConn, candidate, "relay")
-		if err != nil {
-			log.Printf("Failed to migrate relay connection via %s ip=%s: %v", candidate.iface, candidate.ip, err)
-		} else {
-			p.relayTransport = relayTransport
-			p.relayUdpConn = relayUDP
+	p.intermediateTransport = qp.transport
+	p.intermediateUdpConn = qp.udp
+	oldIP := qp.oldIP
+	if oldIP == nil && p.pathCandidateManager.selected != nil {
+		oldIP = p.pathCandidateManager.selected.Local.IP
+	}
+	p.pathCandidateManager.selectPair(best)
+
+	if relayPair := p.relayPairForLocal(best.Local.ID); relayPair != nil && relayPair.State == candidatePairSucceeded {
+		if relayPath := p.quicCandidatePaths[relayPair.ID]; relayPath != nil {
+			if err := relayPath.path.Switch(); err != nil {
+				log.Printf("Failed to switch relay path for selected local candidate %s: %v", best.Local.ID, err)
+			} else {
+				p.relayTransport = relayPath.transport
+				p.relayUdpConn = relayPath.udp
+			}
 		}
 	}
 
+	if oldIP != nil && !oldIP.Equal(best.Local.IP) {
+		if err := p.sendNetworkChangeNotification(oldIP); err != nil {
+			return fmt.Errorf("failed to notify network change after candidate switch: %w", err)
+		}
+	}
+	if err := p.sendRelayAllowlistUpdate(); err != nil {
+		log.Printf("Failed to refresh relay allowlist after candidate switch: %v", err)
+	}
+	log.Printf("Switched QUIC candidate pair to %s via %s ip=%s rtt=%s", best.ID, best.Local.Iface, best.Local.IP, best.RTT)
 	return nil
 }
 
-func (p *Peer) migrateQUICConnection(conn *quic.Conn, candidate localIPCandidate, label string) (*net.UDPConn, *quic.Transport, error) {
-	if conn.Context().Err() != nil {
-		return nil, nil, fmt.Errorf("%s connection is already closed", label)
-	}
-
-	udp, err := listenUDPOnInterface(candidate.iface, candidate.ip)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to listen UDP for %s on %s ip=%s: %w", label, candidate.iface, candidate.ip, err)
-	}
-	transport := &quic.Transport{Conn: udp}
-
-	path, err := conn.AddPath(transport)
-	if err != nil {
-		transport.Close()
-		udp.Close()
-		return nil, nil, fmt.Errorf("failed to add %s path via %s ip=%s: %w", label, candidate.iface, candidate.ip, err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	log.Printf("Probing %s path via %s ip=%s local=%s", label, candidate.iface, candidate.ip, udp.LocalAddr())
-	if err := path.Probe(ctx); err != nil {
-		path.Close()
-		udp.Close()
-		return nil, nil, fmt.Errorf("failed to probe %s path via %s ip=%s: %w", label, candidate.iface, candidate.ip, err)
-	}
-
-	log.Printf("Switching %s path via %s ip=%s", label, candidate.iface, candidate.ip)
-	if err := path.Switch(); err != nil {
-		path.Close()
-		udp.Close()
-		return nil, nil, fmt.Errorf("failed to switch %s path via %s ip=%s: %w", label, candidate.iface, candidate.ip, err)
-	}
-
-	return udp, transport, nil
-}
-
-func candidateLocalIPs(excludeIface string, excludeIP net.IP) ([]localIPCandidate, error) {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list interfaces: %w", err)
-	}
-	var candidates []localIPCandidate
-	for _, iface := range ifaces {
-		if (iface.Flags&net.FlagUp) == 0 || (iface.Flags&net.FlagLoopback) != 0 {
-			continue
-		}
-		if excludeIface != "" && iface.Name == excludeIface {
-			continue
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			default:
-				continue
-			}
-			ip4 := ip.To4()
-			if ip4 == nil {
-				continue
-			}
-			if !ip4.IsGlobalUnicast() {
-				continue
-			}
-			if excludeIP != nil && ip4.Equal(excludeIP.To4()) {
-				continue
-			}
-			candidates = append(candidates, localIPCandidate{iface: iface.Name, ip: ip4, score: interfacePriority(iface.Name)})
+func (p *Peer) relayPairForLocal(localID string) *candidatePair {
+	for _, pair := range p.pathCandidateManager.pairs {
+		if pair.Local.ID == localID && strings.HasPrefix(pair.Remote.ID, "quic/relay/") {
+			return pair
 		}
 	}
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no alternate IPv4 address found")
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].score < candidates[j].score
-	})
-	out := make([]localIPCandidate, 0, len(candidates))
-	for _, c := range candidates {
-		out = append(out, c)
-	}
-	return out, nil
+	return nil
 }
 
 func interfacePriority(name string) int {
@@ -577,21 +637,6 @@ func (p *Peer) acceptRelayStreams() {
 	}
 }
 
-// Return a list of candidate. If we are on the same global segment as the peer, include their local address as a candidate.
-// Otherwise just return the observed address.
-func (p *Peer) buildCandidates(peerObserved, peerLocal string, hasLocal bool) []string {
-	// Decide if we are on the same global segment (observed IP match)
-	if p.ownObservedIP != nil && hasLocal {
-		if host, _, err := net.SplitHostPort(peerObserved); err == nil {
-			peerObsIP := net.ParseIP(host)
-			if sameIPFamily(peerObsIP, p.ownObservedIP) && ipEqual(peerObsIP, p.ownObservedIP) && peerLocal != "" {
-				return []string{peerLocal, peerObserved}
-			}
-		}
-	}
-	return []string{peerObserved}
-}
-
 func sameIPFamily(a, b net.IP) bool {
 	if a == nil || b == nil {
 		return false
@@ -633,11 +678,21 @@ func toProtoAddr(addrStr string) (qswitch.Address, bool) {
 	return qswitch.Address{AF: 0x06, IP: ip.To16(), Port: portNum}, true
 }
 
-func (p *Peer) startHolePunchingCandidates(candidates []string) {
-	if len(candidates) == 0 {
+func (p *Peer) startHolePunchingCandidates() {
+	p.ensureCandidateManagers()
+	p.refreshLocalCandidates()
+	pairs := p.candidateManager.orderedDialPairs(time.Now())
+	if len(pairs) == 0 {
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.hpCancels = append(p.hpCancels, cancel)
-	go attemptPrioritizedHolePunch(ctx, p.intermediateTransport, candidates, p.tlsConfig, p.quicConfig, connectionEstablished)
+	go attemptCandidatePairHolePunch(ctx, pairs, p.tlsConfig, p.quicConfig, connectionEstablished, func(pairID string, rtt time.Duration) {
+		p.migrationMu.Lock()
+		defer p.migrationMu.Unlock()
+		if p.candidateManager != nil {
+			p.candidateManager.recordSuccess(pairID, rtt, time.Now())
+			p.candidateManager.selectPair(p.candidateManager.pairs[pairID])
+		}
+	})
 }

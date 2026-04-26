@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"log"
 	"net"
 	"time"
@@ -11,81 +12,62 @@ import (
 )
 
 const (
-	maxHolePunchAttempts = 5
-	holePunchTimeout     = 2 * time.Second
-	attemptInterval      = 200 * time.Millisecond
+	holePunchTimeout = 2 * time.Second
 )
 
-func attemptNATHolePunch(ctx context.Context, tr *quic.Transport, peerAddr string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan connchan) {
-	log.Printf("Starting NAT hole punching to peer: %s (up to %d attempts)", peerAddr, maxHolePunchAttempts)
-
-	peerAddrResolved, err := net.ResolveUDPAddr("udp", peerAddr)
-	if err != nil {
-		log.Printf("Failed to resolve peer address %s: %v", peerAddr, err)
-		return
-	}
-
-	for attempt := 1; attempt <= maxHolePunchAttempts; attempt++ {
+func attemptCandidatePairHolePunch(ctx context.Context, pairs []*candidatePair, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan connchan, onSuccess func(pairID string, rtt time.Duration)) {
+	for idx, pair := range pairs {
 		select {
 		case <-ctx.Done():
-			log.Printf("Hole punching canceled before attempt %d to %s", attempt, peerAddr)
 			return
 		default:
 		}
 
-		conn, err := performHolePunchAttempt(ctx, tr, peerAddrResolved, tlsConfig, quicConfig)
+		log.Printf("Hole punching candidate pair %d/%d: local=%s remote=%s", idx+1, len(pairs), pair.Local.ID, pair.Remote.Addr)
+		tr, udp, err := transportForLocalCandidate(pair.Local)
 		if err != nil {
-			log.Printf("NAT hole punch attempt %d to %s failed: %v", attempt, peerAddr, err)
+			log.Printf("Failed to create transport for candidate pair %s: %v", pair.ID, err)
+			continue
 		}
-		if conn != nil {
-			// Notify monitor; do not block if channel is full
-			select {
-			case stopChan <- connchan{conn: conn, isAcceptor: false}:
-				break
-			default:
-				log.Printf("connectionEstablished channel full; cannot deliver initiator connection")
-				// Close the connection to avoid leaking resources
-				conn.CloseWithError(0, "dropped: channel full")
-			}
-			return
+		start := time.Now()
+		cctx, cancel := context.WithTimeout(ctx, holePunchTimeout)
+		conn, err := dialCandidatePair(cctx, tr, pair.Remote.Addr, tlsConfig, quicConfig)
+		cancel()
+		rtt := time.Since(start)
+		if err != nil {
+			log.Printf("NAT hole punch candidate pair %s failed: %v", pair.ID, err)
+			tr.Close()
+			udp.Close()
+			continue
 		}
-
-		// Wait briefly before next attempt
+		if onSuccess != nil {
+			onSuccess(pair.ID, rtt)
+		}
 		select {
-		case <-ctx.Done():
-			log.Printf("Hole punching canceled after attempt %d to %s", attempt, peerAddr)
-			return
-		case <-time.After(attemptInterval):
+		case stopChan <- connchan{conn: conn, isAcceptor: false}:
+		default:
+			log.Printf("connectionEstablished channel full; cannot deliver initiator connection")
+			conn.CloseWithError(0, "dropped: channel full")
 		}
+		return
 	}
 }
 
-func performHolePunchAttempt(ctx context.Context, tr *quic.Transport, peerAddrResolved *net.UDPAddr, tlsConfig *tls.Config, quicConfig *quic.Config) (*quic.Conn, error) {
-    log.Printf("NAT hole punch attempt to peer %s", peerAddrResolved.String())
-    conn, err := tr.Dial(ctx, peerAddrResolved, tlsConfig, quicConfig)
+func transportForLocalCandidate(local localCandidate) (*quic.Transport, *net.UDPConn, error) {
+	if local.Iface == "" || local.IP == nil {
+		return nil, nil, fmt.Errorf("missing local candidate binding")
+	}
+	udp, err := listenUDPOnInterface(local.Iface, local.IP)
+	if err != nil {
+		return nil, nil, err
+	}
+	return &quic.Transport{Conn: udp}, udp, nil
+}
 
+func dialCandidatePair(ctx context.Context, tr *quic.Transport, remoteAddr string, tlsConfig *tls.Config, quicConfig *quic.Config) (*quic.Conn, error) {
+	peerAddrResolved, err := net.ResolveUDPAddr("udp", remoteAddr)
 	if err != nil {
 		return nil, err
 	}
-
-	log.Printf("NAT hole punch succeeded - acting as connection initiator")
-
-	return conn, nil
-}
-
-func attemptPrioritizedHolePunch(ctx context.Context, tr *quic.Transport, candidates []string, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan connchan) {
-    for idx, addr := range candidates {
-        select {
-        case <-ctx.Done():
-            return
-        default:
-        }
-        log.Printf("Hole punching candidate %d/%d: %s", idx+1, len(candidates), addr)
-        cctx, cancel := context.WithCancel(ctx)
-        attemptNATHolePunch(cctx, tr, addr, tlsConfig, quicConfig, stopChan)
-        cancel()
-        if ctx.Err() != nil {
-            return
-        }
-    }
+	return tr.Dial(ctx, peerAddrResolved, tlsConfig, quicConfig)
 }
