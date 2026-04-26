@@ -13,7 +13,7 @@ RCV_IF_WIFI ?= wlan0
 RCV_IF_CELL ?= rmnet_data2
 SND_IF_WIFI ?= eth0
 
-.PHONY: peer ps pr exp intermediate relay clean deps cert
+.PHONY: peer ps pr exp intermediate relay clean deps cert cqm-detection
 
 peer: deps cert
 	cd peer && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)" -serverAddr "$(SIGNALING_ADDR)" -relayAddr "$(RELAY_ADDR)" -role "$(ROLE)"
@@ -72,6 +72,9 @@ address-detection:
 
 cm-test:
 	cd peer/cmd && go run -tags connection_migration connection_migration.go -cert ../../$(CERT_FILE) -key ../../$(KEY_FILE) -serverAddr "$(SIGNALING_ADDR)"
+
+cqm-detection:
+	cd peer/cmd && go run -tags cqm_monitor_standalone cqm_monitor_standalone.go
 
 intermediate: deps cert
 	cd intermediate && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
