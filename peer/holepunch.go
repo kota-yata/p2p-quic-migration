@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	holePunchTimeout = 2 * time.Second
+	maxHolePunchAttempts = 5
+	holePunchTimeout     = 2 * time.Second
+	holePunchInterval    = 200 * time.Millisecond
 )
 
-func attemptCandidatePairHolePunch(ctx context.Context, pairs []*candidatePair, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan connchan, onSuccess func(pairID string, rtt time.Duration)) {
+func attemptCandidatePairHolePunch(ctx context.Context, activeTransport *quic.Transport, activeLocalIP net.IP, pairs []*candidatePair, tlsConfig *tls.Config, quicConfig *quic.Config, stopChan chan connchan, onSuccess func(pairID string, rtt time.Duration)) {
 	for idx, pair := range pairs {
 		select {
 		case <-ctx.Done():
@@ -24,20 +26,9 @@ func attemptCandidatePairHolePunch(ctx context.Context, pairs []*candidatePair, 
 		}
 
 		log.Printf("Hole punching candidate pair %d/%d: local=%s remote=%s", idx+1, len(pairs), pair.Local.ID, pair.Remote.Addr)
-		tr, udp, err := transportForLocalCandidate(pair.Local)
-		if err != nil {
-			log.Printf("Failed to create transport for candidate pair %s: %v", pair.ID, err)
-			continue
-		}
-		start := time.Now()
-		cctx, cancel := context.WithTimeout(ctx, holePunchTimeout)
-		conn, err := dialCandidatePair(cctx, tr, pair.Remote.Addr, tlsConfig, quicConfig)
-		cancel()
-		rtt := time.Since(start)
+		conn, rtt, err := attemptCandidatePairWithRetries(ctx, activeTransport, activeLocalIP, pair, tlsConfig, quicConfig)
 		if err != nil {
 			log.Printf("NAT hole punch candidate pair %s failed: %v", pair.ID, err)
-			tr.Close()
-			udp.Close()
 			continue
 		}
 		if onSuccess != nil {
@@ -51,6 +42,54 @@ func attemptCandidatePairHolePunch(ctx context.Context, pairs []*candidatePair, 
 		}
 		return
 	}
+}
+
+func attemptCandidatePairWithRetries(ctx context.Context, activeTransport *quic.Transport, activeLocalIP net.IP, pair *candidatePair, tlsConfig *tls.Config, quicConfig *quic.Config) (*quic.Conn, time.Duration, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxHolePunchAttempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil, 0, ctx.Err()
+		default:
+		}
+
+		tr, closeTransport, err := transportForCandidatePair(activeTransport, activeLocalIP, pair.Local)
+		if err != nil {
+			return nil, 0, err
+		}
+		start := time.Now()
+		cctx, cancel := context.WithTimeout(ctx, holePunchTimeout)
+		conn, err := dialCandidatePair(cctx, tr, pair.Remote.Addr, tlsConfig, quicConfig)
+		cancel()
+		rtt := time.Since(start)
+		if err == nil {
+			return conn, rtt, nil
+		}
+		lastErr = err
+		closeTransport()
+		log.Printf("NAT hole punch attempt %d/%d for candidate pair %s failed: %v", attempt, maxHolePunchAttempts, pair.ID, err)
+
+		select {
+		case <-ctx.Done():
+			return nil, 0, ctx.Err()
+		case <-time.After(holePunchInterval):
+		}
+	}
+	return nil, 0, lastErr
+}
+
+func transportForCandidatePair(activeTransport *quic.Transport, activeLocalIP net.IP, local localCandidate) (*quic.Transport, func(), error) {
+	if activeTransport != nil && ipEqual(local.IP, activeLocalIP) {
+		return activeTransport, func() {}, nil
+	}
+	tr, udp, err := transportForLocalCandidate(local)
+	if err != nil {
+		return nil, nil, err
+	}
+	return tr, func() {
+		tr.Close()
+		udp.Close()
+	}, nil
 }
 
 func transportForLocalCandidate(local localCandidate) (*quic.Transport, *net.UDPConn, error) {

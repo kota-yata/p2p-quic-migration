@@ -159,6 +159,24 @@ func (m *candidatePairManager) upsertRemoteCandidate(candidate remoteCandidate) 
 	m.rebuildPairs()
 }
 
+func (m *candidatePairManager) removeDuplicateRemoteAddrs() {
+	seen := make(map[string]remoteCandidate)
+	for _, candidate := range m.remoteCandidates {
+		current, ok := seen[candidate.Addr]
+		if !ok || candidatePreference(candidate) > candidatePreference(current) {
+			seen[candidate.Addr] = candidate
+		}
+	}
+	if len(seen) == len(m.remoteCandidates) {
+		return
+	}
+	m.remoteCandidates = make(map[string]remoteCandidate, len(seen))
+	for _, candidate := range seen {
+		m.remoteCandidates[candidate.ID] = candidate
+	}
+	m.rebuildPairs()
+}
+
 func (m *candidatePairManager) rebuildPairs() {
 	for _, local := range m.localCandidates {
 		for _, remote := range m.remoteCandidates {
@@ -175,6 +193,12 @@ func (m *candidatePairManager) rebuildPairs() {
 		}
 		if _, ok := m.remoteCandidates[pair.Remote.ID]; !ok {
 			delete(m.pairs, id)
+		}
+	}
+	if m.selected != nil {
+		if _, ok := m.pairs[m.selected.ID]; !ok {
+			m.selected.Selected = false
+			m.selected = nil
 		}
 	}
 }
@@ -232,6 +256,14 @@ func (m *candidatePairManager) orderedDialPairs(now time.Time) []*candidatePair 
 		return pairs[i].qualityScore(now) > pairs[j].qualityScore(now)
 	})
 	return pairs
+}
+
+func candidatePreference(candidate remoteCandidate) int {
+	score := candidateTypeScore(candidate.Type)
+	if candidate.IsLocal {
+		score += 1000
+	}
+	return score
 }
 
 func discoverLocalCandidates() ([]localCandidate, error) {
@@ -342,6 +374,23 @@ func remoteCandidatesFromPeerEndpoint(e qswitch.PeerEndpoint, preferLocal bool) 
 			out = append(out, c)
 		} else {
 			out = append([]remoteCandidate{c}, out...)
+		}
+	}
+	return dedupeRemoteCandidatesByAddr(out)
+}
+
+func dedupeRemoteCandidatesByAddr(candidates []remoteCandidate) []remoteCandidate {
+	out := make([]remoteCandidate, 0, len(candidates))
+	seen := make(map[string]int, len(candidates))
+	for _, candidate := range candidates {
+		idx, ok := seen[candidate.Addr]
+		if !ok {
+			seen[candidate.Addr] = len(out)
+			out = append(out, candidate)
+			continue
+		}
+		if candidatePreference(candidate) > candidatePreference(out[idx]) {
+			out[idx] = candidate
 		}
 	}
 	return out

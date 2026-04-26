@@ -145,6 +145,23 @@ func TestRemoteCandidatesFromPeerEndpointTypes(t *testing.T) {
 	}
 }
 
+func TestRemoteCandidatesFromPeerEndpointDedupesSameAddress(t *testing.T) {
+	endpoint := qswitch.PeerEndpoint{
+		PeerID:   7,
+		Observed: qswitch.Address{AF: 0x04, IP: net.ParseIP("203.0.113.7").To4(), Port: 5000},
+		Local:    qswitch.Address{AF: 0x04, IP: net.ParseIP("203.0.113.7").To4(), Port: 5000},
+		Flags:    0x01,
+	}
+
+	candidates := remoteCandidatesFromPeerEndpoint(endpoint, true)
+	if len(candidates) != 1 {
+		t.Fatalf("expected duplicate endpoint addresses to collapse, got %d: %#v", len(candidates), candidates)
+	}
+	if candidates[0].Type != candidateTypeHost || !candidates[0].IsLocal {
+		t.Fatalf("expected local host candidate to win duplicate address, got %#v", candidates[0])
+	}
+}
+
 func testPair(localType, remoteType candidateType, rtt time.Duration) *candidatePair {
 	pair := newCandidatePair(
 		localCandidate{ID: "local/" + string(localType), Type: localType},

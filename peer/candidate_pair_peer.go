@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	network_monitor "github.com/kota-yata/p2p-quic-migration/peer/network"
 	"github.com/kota-yata/p2p-quic-migration/shared/qswitch"
 	"github.com/quic-go/quic-go"
 )
@@ -63,6 +64,7 @@ func (p *Peer) registerPeerEndpointCandidates(e qswitch.PeerEndpoint) {
 	for _, candidate := range remoteCandidatesFromPeerEndpoint(e, preferLocal) {
 		p.candidateManager.upsertRemoteCandidate(candidate)
 	}
+	p.candidateManager.removeDuplicateRemoteAddrs()
 	p.refreshLocalCandidates()
 }
 
@@ -73,6 +75,7 @@ func (p *Peer) registerRemoteEndpointCandidate(addr string, typ candidateType, p
 		return
 	}
 	p.candidateManager.upsertRemoteCandidate(candidate)
+	p.candidateManager.removeDuplicateRemoteAddrs()
 	p.refreshLocalCandidates()
 }
 
@@ -94,10 +97,14 @@ func (p *Peer) evaluateCandidatePairs() {
 		return
 	}
 	p.refreshLocalCandidates()
+	p.seedActivePathCandidate(time.Now())
 
 	now := time.Now()
 	for _, pair := range p.pathCandidateManager.pairs {
 		if pair.State == candidatePairFailed || pair.Remote.Type == candidateTypeRelay && p.relayConn == nil {
+			continue
+		}
+		if p.isActiveLocalCandidate(pair.Local) {
 			continue
 		}
 		p.probeQUICCandidatePath(pair)
@@ -118,6 +125,44 @@ func (p *Peer) evaluateCandidatePairs() {
 		log.Printf("Failed to switch selected candidate pair %s: %v", best.ID, err)
 		return
 	}
+}
+
+func (p *Peer) seedActivePathCandidate(now time.Time) {
+	if p.pathCandidateManager.selected != nil {
+		return
+	}
+	activeIP := p.activeLocalIP()
+	if activeIP == nil {
+		return
+	}
+	for _, pair := range p.pathCandidateManager.pairs {
+		if !strings.HasPrefix(pair.Remote.ID, "quic/intermediate/") || !ipEqual(pair.Local.IP, activeIP) {
+			continue
+		}
+		pair.State = candidatePairSucceeded
+		pair.LastResponse = now
+		p.pathCandidateManager.selectPair(pair)
+		return
+	}
+}
+
+func (p *Peer) isActiveLocalCandidate(candidate localCandidate) bool {
+	return ipEqual(candidate.IP, p.activeLocalIP())
+}
+
+func (p *Peer) activeLocalIP() net.IP {
+	if p.intermediateUdpConn != nil {
+		if addr, ok := p.intermediateUdpConn.LocalAddr().(*net.UDPAddr); ok && addr != nil {
+			if ip4 := addr.IP.To4(); ip4 != nil && !ip4.IsUnspecified() {
+				return ip4
+			}
+		}
+	}
+	ip, err := network_monitor.GetCurrentAddress()
+	if err != nil {
+		return nil
+	}
+	return ip.To4()
 }
 
 func (p *Peer) bestIntermediatePathCandidate(now time.Time) *candidatePair {
@@ -244,7 +289,7 @@ func (p *Peer) startHolePunchingCandidates() {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.hpCancels = append(p.hpCancels, cancel)
-	go attemptCandidatePairHolePunch(ctx, pairs, p.tlsConfig, p.quicConfig, connectionEstablished, func(pairID string, rtt time.Duration) {
+	go attemptCandidatePairHolePunch(ctx, p.intermediateTransport, p.activeLocalIP(), pairs, p.tlsConfig, p.quicConfig, connectionEstablished, func(pairID string, rtt time.Duration) {
 		p.migrationMu.Lock()
 		defer p.migrationMu.Unlock()
 		if p.candidateManager != nil {
