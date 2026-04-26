@@ -42,20 +42,14 @@ type Peer struct {
 	ownObservedIP         net.IP
 	audioRelayStop        func()
 	migrationMu           sync.Mutex
-	preparedPath          *preparedMigrationPath
-	linkDegraded          bool
 	// hole punch cancellation management
 	hpCancels []context.CancelFunc
 }
 
-type preparedMigrationPath struct {
-	ip                    net.IP
-	intermediatePath      *quic.Path
-	intermediateTransport *quic.Transport
-	intermediateUDPConn   *net.UDPConn
-	relayPath             *quic.Path
-	relayTransport        *quic.Transport
-	relayUDPConn          *net.UDPConn
+type localIPCandidate struct {
+	iface string
+	ip    net.IP
+	score int
 }
 
 type endpointInfo struct {
@@ -143,8 +137,6 @@ func (p *Peer) Run() error {
 	go IntermediateControlReadLoop(intermediateConn, p, stream)
 	go p.acceptRelayStreams()
 	p.startQualityMonitor()
-	go p.prepareBackupPaths()
-
 	go p.monitorHolepunch()
 
 	return p.runPeerListener()
@@ -209,10 +201,6 @@ func (p *Peer) cleanup() {
 	}
 	if p.relayUdpConn != nil {
 		p.relayUdpConn.Close()
-	}
-	if p.preparedPath != nil {
-		p.preparedPath.close()
-		p.preparedPath = nil
 	}
 	if p.qualityMonitor != nil {
 		p.qualityMonitor.Stop()
@@ -346,40 +334,6 @@ func (p *Peer) switchToAudioRelay(targetPeerID uint32) error {
 	return nil
 }
 
-// Migrate intermediate and relay connections, then notify network change.
-func (p *Peer) onAddrChange(oldAddr, newAddr net.IP) {
-	log.Printf("Handling network change from %s to %s", oldAddr, newAddr)
-
-	if p.intermediateConn == nil {
-		log.Println("No intermediate connection available for network change")
-		return
-	}
-
-	if err := p.migrateIntermediateConnection(newAddr); err != nil {
-		log.Printf("Failed to migrate server connection: %v", err)
-		return
-	}
-	log.Printf("Successfully migrated server connection to new address: %s", newAddr)
-
-	if p.relayConn != nil {
-		if err := p.migrateRelayConnection(newAddr); err != nil {
-			log.Printf("Failed to migrate relay connection: %v", err)
-		} else {
-			log.Printf("Successfully migrated relay connection to new address: %s", newAddr)
-		}
-	}
-
-	if err := p.sendNetworkChangeNotification(oldAddr); err != nil {
-		log.Printf("Failed to send server network change notification after migration: %v", err)
-		return
-	}
-
-	// Update relay allow list for our peers as our own source address changed from relay's perspective
-	if err := p.sendRelayAllowlistUpdate(); err != nil {
-		log.Printf("Failed to refresh relay allowlist after our migration: %v", err)
-	}
-}
-
 // monitorHolepunch waits for either acceptor or initiator connection events,
 // cancels outstanding hole punching attempts, and hands off to the proper handler.
 func (p *Peer) monitorHolepunch() {
@@ -418,9 +372,6 @@ func (p *Peer) onQualityEvent(evt network_monitor.QualityEvent) {
 	case network_monitor.QualityEventLinkRecovered:
 		log.Printf("Wireless link recovered on %s ip=%s rssi=%ddBm",
 			evt.Current.Interface, evt.Current.IP, evt.Current.RSSIDBm)
-		p.migrationMu.Lock()
-		p.linkDegraded = false
-		p.migrationMu.Unlock()
 	}
 }
 
@@ -428,202 +379,107 @@ func (p *Peer) handleLinkDegraded(evt network_monitor.QualityEvent) {
 	p.migrationMu.Lock()
 	defer p.migrationMu.Unlock()
 
-	p.linkDegraded = true
-	if p.preparedPath == nil {
-		if err := p.prepareBackupPathsLocked(evt.Current.Interface, evt.Current.IP); err != nil {
-			log.Printf("Failed to prepare backup path after degradation: %v", err)
-			return
-		}
-	}
-	if p.preparedPath == nil {
-		log.Printf("No prepared backup path available for degraded link")
-		return
-	}
-	if err := p.switchToPreparedPathLocked(evt.Current.IP); err != nil {
-		log.Printf("Failed to switch to prepared path: %v", err)
+	if err := p.migrateAfterDegradationLocked(evt.Current.Interface, evt.Current.IP); err != nil {
+		log.Printf("Failed to migrate after degradation: %v", err)
 		return
 	}
 }
 
-func (p *Peer) prepareBackupPaths() {
-	p.migrationMu.Lock()
-	defer p.migrationMu.Unlock()
-
-	current, err := network_monitor.GetCurrentAddress()
-	if err != nil {
-		log.Printf("Failed to determine current address for backup path preparation: %v", err)
-		return
-	}
-	if err := p.prepareBackupPathsLocked("", current); err != nil {
-		log.Printf("Failed to prepare backup path: %v", err)
-	}
-}
-
-func (p *Peer) prepareBackupPathsLocked(excludeIface string, excludeIP net.IP) error {
+func (p *Peer) migrateAfterDegradationLocked(currentIface string, currentIP net.IP) error {
 	if p.intermediateConn == nil {
 		return fmt.Errorf("no intermediate connection available")
 	}
-	if p.preparedPath != nil {
-		return nil
-	}
 
-	candidates, err := candidateLocalIPs(excludeIface, excludeIP)
+	candidates, err := candidateLocalIPs(currentIface, currentIP)
 	if err != nil {
 		return err
 	}
-	for _, ip := range candidates {
-		prepared, err := p.probeMigrationPath(ip)
-		if err != nil {
-			log.Printf("Backup path probe failed for %s: %v", ip, err)
+	for _, candidate := range candidates {
+		log.Printf("Selected backup interface %s ip=%s for degraded %s ip=%s",
+			candidate.iface, candidate.ip, currentIface, currentIP)
+		if err := p.migrateConnectionsToCandidate(candidate); err != nil {
+			log.Printf("Migration attempt failed via %s ip=%s: %v", candidate.iface, candidate.ip, err)
 			continue
 		}
-		p.preparedPath = prepared
-		log.Printf("Prepared backup QUIC path via local IP %s", ip)
+		if err := p.sendNetworkChangeNotification(currentIP); err != nil {
+			return fmt.Errorf("failed to notify network change after migration: %w", err)
+		}
+		if err := p.sendRelayAllowlistUpdate(); err != nil {
+			log.Printf("Failed to refresh relay allowlist after migration: %v", err)
+		}
+		log.Printf("Migrated degraded link to %s ip=%s", candidate.iface, candidate.ip)
 		return nil
 	}
-	return fmt.Errorf("no viable backup path candidates")
+	return fmt.Errorf("no alternate interface passed path validation")
 }
 
-func (p *Peer) probeMigrationPath(ip net.IP) (*preparedMigrationPath, error) {
-	prepared := &preparedMigrationPath{ip: ip}
-
-	udp, tr, err := newBoundTransport(ip)
+func (p *Peer) migrateConnectionsToCandidate(candidate localIPCandidate) error {
+	intermediateUDP, intermediateTransport, err := p.migrateQUICConnection(p.intermediateConn, candidate, "intermediate")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	prepared.intermediateUDPConn = udp
-	prepared.intermediateTransport = tr
-
-	path, err := p.intermediateConn.AddPath(tr)
-	if err != nil {
-		prepared.close()
-		return nil, fmt.Errorf("failed to add intermediate path: %w", err)
-	}
-	prepared.intermediatePath = path
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := path.Probe(ctx); err != nil {
-		prepared.close()
-		return nil, fmt.Errorf("failed to probe intermediate path: %w", err)
-	}
+	p.intermediateTransport = intermediateTransport
+	p.intermediateUdpConn = intermediateUDP
 
 	if p.relayConn != nil {
-		relayUDP, relayTr, err := newBoundTransport(ip)
+		relayUDP, relayTransport, err := p.migrateQUICConnection(p.relayConn, candidate, "relay")
 		if err != nil {
-			log.Printf("Failed to create relay backup path transport: %v", err)
+			log.Printf("Failed to migrate relay connection via %s ip=%s: %v", candidate.iface, candidate.ip, err)
 		} else {
-			prepared.relayUDPConn = relayUDP
-			prepared.relayTransport = relayTr
-			relayPath, err := p.relayConn.AddPath(relayTr)
-			if err != nil {
-				log.Printf("Failed to add relay backup path: %v", err)
-				relayTr.Close()
-				relayUDP.Close()
-				prepared.relayTransport = nil
-				prepared.relayUDPConn = nil
-			} else {
-				relayCtx, relayCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := relayPath.Probe(relayCtx); err != nil {
-					log.Printf("Failed to probe relay backup path: %v", err)
-					relayPath.Close()
-					relayTr.Close()
-					relayUDP.Close()
-					prepared.relayTransport = nil
-					prepared.relayUDPConn = nil
-				} else {
-					prepared.relayPath = relayPath
-				}
-				relayCancel()
-			}
+			p.relayTransport = relayTransport
+			p.relayUdpConn = relayUDP
 		}
 	}
 
-	return prepared, nil
-}
-
-func (p *Peer) switchToPreparedPathLocked(oldAddr net.IP) error {
-	prepared := p.preparedPath
-	if prepared == nil {
-		return fmt.Errorf("no prepared path")
-	}
-
-	if err := prepared.intermediatePath.Switch(); err != nil {
-		return fmt.Errorf("failed to switch intermediate path: %w", err)
-	}
-	p.intermediateTransport = prepared.intermediateTransport
-	p.intermediateUdpConn = prepared.intermediateUDPConn
-
-	if prepared.relayPath != nil {
-		if err := prepared.relayPath.Switch(); err != nil {
-			log.Printf("Failed to switch relay path: %v", err)
-			_ = prepared.relayPath.Close()
-			if prepared.relayTransport != nil {
-				_ = prepared.relayTransport.Close()
-			}
-			if prepared.relayUDPConn != nil {
-				_ = prepared.relayUDPConn.Close()
-			}
-		} else {
-			p.relayTransport = prepared.relayTransport
-			p.relayUdpConn = prepared.relayUDPConn
-		}
-	}
-
-	p.preparedPath = nil
-	log.Printf("Switched QUIC path to prepared local IP %s", prepared.ip)
-
-	if err := p.sendNetworkChangeNotification(oldAddr); err != nil {
-		return fmt.Errorf("failed to notify network change after quality switch: %w", err)
-	}
-	if err := p.sendRelayAllowlistUpdate(); err != nil {
-		log.Printf("Failed to refresh relay allowlist after quality switch: %v", err)
-	}
 	return nil
 }
 
-func (p *preparedMigrationPath) close() {
-	if p == nil {
-		return
+func (p *Peer) migrateQUICConnection(conn *quic.Conn, candidate localIPCandidate, label string) (*net.UDPConn, *quic.Transport, error) {
+	if conn.Context().Err() != nil {
+		return nil, nil, fmt.Errorf("%s connection is already closed", label)
 	}
-	if p.intermediatePath != nil {
-		_ = p.intermediatePath.Close()
-	}
-	if p.intermediateTransport != nil {
-		_ = p.intermediateTransport.Close()
-	}
-	if p.intermediateUDPConn != nil {
-		_ = p.intermediateUDPConn.Close()
-	}
-	if p.relayPath != nil {
-		_ = p.relayPath.Close()
-	}
-	if p.relayTransport != nil {
-		_ = p.relayTransport.Close()
-	}
-	if p.relayUDPConn != nil {
-		_ = p.relayUDPConn.Close()
-	}
-}
 
-func newBoundTransport(ip net.IP) (*net.UDPConn, *quic.Transport, error) {
-	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip, Port: 0})
+	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: candidate.ip, Port: 0})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to listen UDP on %s: %w", ip, err)
+		return nil, nil, fmt.Errorf("failed to listen UDP for %s on %s ip=%s: %w", label, candidate.iface, candidate.ip, err)
 	}
-	return udp, &quic.Transport{Conn: udp}, nil
+	transport := &quic.Transport{Conn: udp}
+
+	path, err := conn.AddPath(transport)
+	if err != nil {
+		transport.Close()
+		udp.Close()
+		return nil, nil, fmt.Errorf("failed to add %s path via %s ip=%s: %w", label, candidate.iface, candidate.ip, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	log.Printf("Probing %s path via %s ip=%s local=%s", label, candidate.iface, candidate.ip, udp.LocalAddr())
+	if err := path.Probe(ctx); err != nil {
+		path.Close()
+		transport.Close()
+		udp.Close()
+		return nil, nil, fmt.Errorf("failed to probe %s path via %s ip=%s: %w", label, candidate.iface, candidate.ip, err)
+	}
+
+	log.Printf("Switching %s path via %s ip=%s", label, candidate.iface, candidate.ip)
+	if err := path.Switch(); err != nil {
+		path.Close()
+		transport.Close()
+		udp.Close()
+		return nil, nil, fmt.Errorf("failed to switch %s path via %s ip=%s: %w", label, candidate.iface, candidate.ip, err)
+	}
+
+	return udp, transport, nil
 }
 
-func candidateLocalIPs(excludeIface string, excludeIP net.IP) ([]net.IP, error) {
+func candidateLocalIPs(excludeIface string, excludeIP net.IP) ([]localIPCandidate, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list interfaces: %w", err)
 	}
-	type candidate struct {
-		ip    net.IP
-		score int
-	}
-	var candidates []candidate
+	var candidates []localIPCandidate
 	for _, iface := range ifaces {
 		if (iface.Flags&net.FlagUp) == 0 || (iface.Flags&net.FlagLoopback) != 0 {
 			continue
@@ -649,10 +505,13 @@ func candidateLocalIPs(excludeIface string, excludeIP net.IP) ([]net.IP, error) 
 			if ip4 == nil {
 				continue
 			}
+			if !ip4.IsGlobalUnicast() {
+				continue
+			}
 			if excludeIP != nil && ip4.Equal(excludeIP.To4()) {
 				continue
 			}
-			candidates = append(candidates, candidate{ip: ip4, score: interfacePriority(iface.Name)})
+			candidates = append(candidates, localIPCandidate{iface: iface.Name, ip: ip4, score: interfacePriority(iface.Name)})
 		}
 	}
 	if len(candidates) == 0 {
@@ -661,9 +520,9 @@ func candidateLocalIPs(excludeIface string, excludeIP net.IP) ([]net.IP, error) 
 	sort.SliceStable(candidates, func(i, j int) bool {
 		return candidates[i].score < candidates[j].score
 	})
-	out := make([]net.IP, 0, len(candidates))
+	out := make([]localIPCandidate, 0, len(candidates))
 	for _, c := range candidates {
-		out = append(out, c.ip)
+		out = append(out, c)
 	}
 	return out, nil
 }
@@ -686,94 +545,6 @@ func interfacePriority(name string) int {
 	default:
 		return 3
 	}
-}
-
-func (p *Peer) migrateIntermediateConnection(newAddr net.IP) error {
-	if p.intermediateConn.Context().Err() != nil {
-		return fmt.Errorf("connection is already closed, cannot migrate")
-	}
-
-	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-	if err != nil {
-		return fmt.Errorf("failed to create new UDP connection: %v", err)
-	}
-
-	newTransport := &quic.Transport{
-		Conn: newUDPConn,
-	}
-
-	path, err := p.intermediateConn.AddPath(newTransport)
-	if err != nil {
-		newUDPConn.Close()
-		return fmt.Errorf("failed to add new path: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	log.Printf("Probing new path to intermediate server (local %s)", newUDPConn.LocalAddr().String())
-	if err := path.Probe(ctx); err != nil {
-		newUDPConn.Close()
-		return fmt.Errorf("failed to probe new path: %v", err)
-	} else {
-		log.Printf("Path probing succeeded")
-	}
-
-	log.Printf("Switching to new path")
-	if err := path.Switch(); err != nil {
-		if closeErr := path.Close(); closeErr != nil {
-			log.Printf("Warning: failed to close path after switch failure: %v", closeErr)
-		}
-		newUDPConn.Close()
-		return fmt.Errorf("failed to switch to new path: %v", err)
-	}
-
-	p.intermediateTransport = newTransport
-	p.intermediateUdpConn = newUDPConn
-
-	return nil
-}
-
-func (p *Peer) migrateRelayConnection(newAddr net.IP) error {
-	if p.relayConn.Context().Err() != nil {
-		return fmt.Errorf("connection is already closed, cannot migrate (relay)")
-	}
-
-	newUDPConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-	if err != nil {
-		return fmt.Errorf("failed to create new UDP connection for relay: %v", err)
-	}
-
-	newTransport := &quic.Transport{Conn: newUDPConn}
-
-	path, err := p.relayConn.AddPath(newTransport)
-	if err != nil {
-		newUDPConn.Close()
-		return fmt.Errorf("failed to add new path to relay: %v", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	log.Printf("Probing new path to relay server (local %s)", newUDPConn.LocalAddr().String())
-	if err := path.Probe(ctx); err != nil {
-		newUDPConn.Close()
-		return fmt.Errorf("failed to probe new relay path: %v", err)
-	}
-
-	log.Printf("Switching to new relay path")
-	if err := path.Switch(); err != nil {
-		if closeErr := path.Close(); closeErr != nil {
-			log.Printf("Warning: failed to close relay path after switch failure: %v", closeErr)
-		}
-		newUDPConn.Close()
-		return fmt.Errorf("failed to switch to new relay path: %v", err)
-	}
-
-	p.relayTransport = newTransport
-	p.relayUdpConn = newUDPConn
-
-	return nil
 }
 
 func (p *Peer) sendNetworkChangeNotification(oldAddr net.IP) error {
