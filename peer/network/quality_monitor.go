@@ -11,18 +11,8 @@ import (
 const (
 	defaultQualitySampleInterval = 200 * time.Millisecond
 	defaultDegradedRSSI          = -75
-	defaultRecoveredRSSI         = -67
 	defaultRapidDropWindow       = 5 * time.Second
 	defaultRapidDropDB           = 10
-	defaultRecoveryDuration      = 5 * time.Second
-	defaultSwitchCooldown        = 10 * time.Second
-)
-
-type QualityEventType int
-
-const (
-	QualityEventLinkDegraded QualityEventType = iota + 1
-	QualityEventLinkRecovered
 )
 
 type QualitySnapshot struct {
@@ -35,7 +25,6 @@ type QualitySnapshot struct {
 }
 
 type QualityEvent struct {
-	Type     QualityEventType
 	Current  QualitySnapshot
 	Previous QualitySnapshot
 	Reason   string
@@ -47,13 +36,10 @@ type QualityProvider interface {
 }
 
 type QualityMonitorConfig struct {
-	SampleInterval   time.Duration
-	DegradedRSSI     int
-	RecoveredRSSI    int
-	RapidDropWindow  time.Duration
-	RapidDropDB      int
-	RecoveryDuration time.Duration
-	SwitchCooldown   time.Duration
+	SampleInterval  time.Duration
+	DegradedRSSI    int
+	RapidDropWindow time.Duration
+	RapidDropDB     int
 }
 
 type QualityMonitor struct {
@@ -65,23 +51,16 @@ type QualityMonitor struct {
 	doneChan chan struct{}
 	started  bool
 
-	mu              sync.Mutex
-	lastSnapshot    QualitySnapshot
-	degraded        bool
-	degradedCount   int
-	recoveredSince  time.Time
-	lastSwitchEvent time.Time
+	mu           sync.Mutex
+	lastSnapshot QualitySnapshot
 }
 
 func DefaultQualityMonitorConfig() QualityMonitorConfig {
 	return QualityMonitorConfig{
-		SampleInterval:   defaultQualitySampleInterval,
-		DegradedRSSI:     defaultDegradedRSSI,
-		RecoveredRSSI:    defaultRecoveredRSSI,
-		RapidDropWindow:  defaultRapidDropWindow,
-		RapidDropDB:      defaultRapidDropDB,
-		RecoveryDuration: defaultRecoveryDuration,
-		SwitchCooldown:   defaultSwitchCooldown,
+		SampleInterval:  defaultQualitySampleInterval,
+		DegradedRSSI:    defaultDegradedRSSI,
+		RapidDropWindow: defaultRapidDropWindow,
+		RapidDropDB:     defaultRapidDropDB,
 	}
 }
 
@@ -95,12 +74,6 @@ func NewQualityMonitorWithProvider(provider QualityProvider, onEvent func(Qualit
 	}
 	if cfg.RapidDropWindow <= 0 {
 		cfg.RapidDropWindow = defaultRapidDropWindow
-	}
-	if cfg.RecoveryDuration <= 0 {
-		cfg.RecoveryDuration = defaultRecoveryDuration
-	}
-	if cfg.SwitchCooldown <= 0 {
-		cfg.SwitchCooldown = defaultSwitchCooldown
 	}
 	return &QualityMonitor{
 		provider: provider,
@@ -194,41 +167,12 @@ func (qm *QualityMonitor) evaluate(snap QualitySnapshot) (QualityEvent, bool) {
 		prev.RSSIDBm-snap.RSSIDBm >= qm.cfg.RapidDropDB
 
 	weakSignal := snap.RSSIDBm <= qm.cfg.DegradedRSSI
-	if weakSignal {
-		qm.degradedCount++
-	} else {
-		qm.degradedCount = 0
-	}
-
-	if !qm.degraded && (qm.degradedCount >= 2 || rapidDrop) {
-		if !qm.lastSwitchEvent.IsZero() && now.Sub(qm.lastSwitchEvent) < qm.cfg.SwitchCooldown {
-			return QualityEvent{}, false
-		}
-		qm.degraded = true
-		qm.lastSwitchEvent = now
+	if weakSignal || rapidDrop {
 		reason := "weak signal"
 		if rapidDrop {
 			reason = "rapid signal drop"
 		}
-		return QualityEvent{Type: QualityEventLinkDegraded, Current: snap, Previous: prev, Reason: reason}, true
-	}
-
-	if qm.degraded && snap.RSSIDBm >= qm.cfg.RecoveredRSSI {
-		if qm.recoveredSince.IsZero() {
-			qm.recoveredSince = now
-			return QualityEvent{}, false
-		}
-		if now.Sub(qm.recoveredSince) >= qm.cfg.RecoveryDuration {
-			qm.degraded = false
-			qm.degradedCount = 0
-			qm.recoveredSince = time.Time{}
-			return QualityEvent{Type: QualityEventLinkRecovered, Current: snap, Previous: prev, Reason: "signal recovered"}, true
-		}
-		return QualityEvent{}, false
-	}
-
-	if snap.RSSIDBm < qm.cfg.RecoveredRSSI {
-		qm.recoveredSince = time.Time{}
+		return QualityEvent{Current: snap, Previous: prev, Reason: reason}, true
 	}
 	return QualityEvent{}, false
 }

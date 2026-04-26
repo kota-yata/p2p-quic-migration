@@ -364,15 +364,9 @@ func (p *Peer) startQualityMonitor() {
 }
 
 func (p *Peer) onQualityEvent(evt network_monitor.QualityEvent) {
-	switch evt.Type {
-	case network_monitor.QualityEventLinkDegraded:
-		log.Printf("Wireless link degraded on %s ip=%s rssi=%ddBm reason=%s",
-			evt.Current.Interface, evt.Current.IP, evt.Current.RSSIDBm, evt.Reason)
-		go p.handleLinkDegraded(evt)
-	case network_monitor.QualityEventLinkRecovered:
-		log.Printf("Wireless link recovered on %s ip=%s rssi=%ddBm",
-			evt.Current.Interface, evt.Current.IP, evt.Current.RSSIDBm)
-	}
+	log.Printf("Wireless link degraded on %s ip=%s rssi=%ddBm reason=%s",
+		evt.Current.Interface, evt.Current.IP, evt.Current.RSSIDBm, evt.Reason)
+	go p.handleLinkDegraded(evt)
 }
 
 func (p *Peer) handleLinkDegraded(evt network_monitor.QualityEvent) {
