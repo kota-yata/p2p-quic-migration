@@ -11,7 +11,8 @@ import (
 )
 
 const (
-	candidatePairProbeInterval = 500 * time.Millisecond
+	candidatePairProbeInterval = 200 * time.Millisecond
+	candidatePathProbeTimeout  = 200 * time.Millisecond
 	candidateStabilityWindow   = 5 * time.Second
 	candidateRTTThreshold      = 10 * time.Millisecond
 	candidateQualityThreshold  = 1.15

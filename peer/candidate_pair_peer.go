@@ -216,7 +216,7 @@ func (p *Peer) probeQUICCandidatePath(pair *candidatePair) {
 
 	previousState := pair.State
 	pair.State = candidatePairInProgress
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), candidatePathProbeTimeout)
 	start := time.Now()
 	err := qp.path.Probe(ctx)
 	cancel()

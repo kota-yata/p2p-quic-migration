@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	maxHolePunchAttempts = 5
-	holePunchTimeout     = 2 * time.Second
+	maxHolePunchAttempts = 1
+	holePunchTimeout     = 200 * time.Millisecond
 	holePunchInterval    = 200 * time.Millisecond
 )
 
@@ -68,6 +68,9 @@ func attemptCandidatePairWithRetries(ctx context.Context, activeTransport *quic.
 		lastErr = err
 		closeTransport()
 		log.Printf("NAT hole punch attempt %d/%d for candidate pair %s failed: %v", attempt, maxHolePunchAttempts, pair.ID, err)
+		if attempt == maxHolePunchAttempts {
+			break
+		}
 
 		select {
 		case <-ctx.Done():
