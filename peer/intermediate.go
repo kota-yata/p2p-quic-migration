@@ -8,6 +8,7 @@ import (
 	"net"
 	"time"
 
+	network_monitor "github.com/kota-yata/p2p-quic-migration/peer/network"
 	"github.com/kota-yata/p2p-quic-migration/shared/qswitch"
 	"github.com/quic-go/quic-go"
 )
@@ -49,7 +50,7 @@ func IntermediateControlReadLoop(conn *quic.Conn, p *Peer, stream *quic.Stream) 
 	p.ownObservedIP = oa.Observed.IP
 	log.Printf("Server observed our address: %s:%d", oa.Observed.IP.String(), oa.Observed.Port)
 
-	localIP, err := p.networkMonitor.GetCurrentAddress()
+	localIP, err := network_monitor.GetCurrentAddress()
 	if err != nil {
 		log.Printf("Failed to get local IP: %v", err)
 		return

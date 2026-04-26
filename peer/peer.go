@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	network_monitor "github.com/kota-yata/p2p-quic-migration/peer/network"
@@ -34,12 +37,25 @@ type Peer struct {
 	relayAllowStream      *quic.Stream
 	relayTransport        *quic.Transport
 	relayUdpConn          *net.UDPConn
-	networkMonitor        *network_monitor.NetworkMonitor
+	qualityMonitor        *network_monitor.QualityMonitor
 	endpoints             map[uint32]endpointInfo
 	ownObservedIP         net.IP
 	audioRelayStop        func()
+	migrationMu           sync.Mutex
+	preparedPath          *preparedMigrationPath
+	linkDegraded          bool
 	// hole punch cancellation management
 	hpCancels []context.CancelFunc
+}
+
+type preparedMigrationPath struct {
+	ip                    net.IP
+	intermediatePath      *quic.Path
+	intermediateTransport *quic.Transport
+	intermediateUDPConn   *net.UDPConn
+	relayPath             *quic.Path
+	relayTransport        *quic.Transport
+	relayUDPConn          *net.UDPConn
 }
 
 type endpointInfo struct {
@@ -95,11 +111,6 @@ func (p *Peer) Run() error {
 		return fmt.Errorf("failed to setup TLS: %v", err)
 	}
 
-	p.networkMonitor = network_monitor.NewNetworkMonitor(p.onAddrChange)
-	if err := p.networkMonitor.Start(); err != nil {
-		return fmt.Errorf("failed to start network monitor: %v", err)
-	}
-
 	if err := p.setupTransport(); err != nil {
 		return fmt.Errorf("failed to setup transport: %v", err)
 	}
@@ -131,6 +142,8 @@ func (p *Peer) Run() error {
 	p.intermediateStream = stream
 	go IntermediateControlReadLoop(intermediateConn, p, stream)
 	go p.acceptRelayStreams()
+	p.startQualityMonitor()
+	go p.prepareBackupPaths()
 
 	go p.monitorHolepunch()
 
@@ -159,7 +172,7 @@ func (p *Peer) setupTLS() error {
 
 func (p *Peer) setupTransport() error {
 	var err error
-	currentAddr, err := p.networkMonitor.GetCurrentAddress()
+	currentAddr, err := network_monitor.GetCurrentAddress()
 	if err != nil {
 		return fmt.Errorf("failed to get current network address: %v", err)
 	}
@@ -197,8 +210,12 @@ func (p *Peer) cleanup() {
 	if p.relayUdpConn != nil {
 		p.relayUdpConn.Close()
 	}
-	if p.networkMonitor != nil {
-		p.networkMonitor.Stop()
+	if p.preparedPath != nil {
+		p.preparedPath.close()
+		p.preparedPath = nil
+	}
+	if p.qualityMonitor != nil {
+		p.qualityMonitor.Stop()
 	}
 }
 
@@ -380,6 +397,294 @@ func (p *Peer) monitorHolepunch() {
 			peerAddr := evt.conn.RemoteAddr().String()
 			handleCommunicationAsInitiator(evt.conn, peerAddr, p.config.role)
 		}
+	}
+}
+
+func (p *Peer) startQualityMonitor() {
+	qm := network_monitor.NewQualityMonitor(p.onQualityEvent)
+	if err := qm.Start(); err != nil {
+		log.Printf("Quality monitor disabled: %v", err)
+		return
+	}
+	p.qualityMonitor = qm
+}
+
+func (p *Peer) onQualityEvent(evt network_monitor.QualityEvent) {
+	switch evt.Type {
+	case network_monitor.QualityEventLinkDegraded:
+		log.Printf("Wireless link degraded on %s ip=%s rssi=%ddBm reason=%s",
+			evt.Current.Interface, evt.Current.IP, evt.Current.RSSIDBm, evt.Reason)
+		go p.handleLinkDegraded(evt)
+	case network_monitor.QualityEventLinkRecovered:
+		log.Printf("Wireless link recovered on %s ip=%s rssi=%ddBm",
+			evt.Current.Interface, evt.Current.IP, evt.Current.RSSIDBm)
+		p.migrationMu.Lock()
+		p.linkDegraded = false
+		p.migrationMu.Unlock()
+	}
+}
+
+func (p *Peer) handleLinkDegraded(evt network_monitor.QualityEvent) {
+	p.migrationMu.Lock()
+	defer p.migrationMu.Unlock()
+
+	p.linkDegraded = true
+	if p.preparedPath == nil {
+		if err := p.prepareBackupPathsLocked(evt.Current.Interface, evt.Current.IP); err != nil {
+			log.Printf("Failed to prepare backup path after degradation: %v", err)
+			return
+		}
+	}
+	if p.preparedPath == nil {
+		log.Printf("No prepared backup path available for degraded link")
+		return
+	}
+	if err := p.switchToPreparedPathLocked(evt.Current.IP); err != nil {
+		log.Printf("Failed to switch to prepared path: %v", err)
+		return
+	}
+}
+
+func (p *Peer) prepareBackupPaths() {
+	p.migrationMu.Lock()
+	defer p.migrationMu.Unlock()
+
+	current, err := network_monitor.GetCurrentAddress()
+	if err != nil {
+		log.Printf("Failed to determine current address for backup path preparation: %v", err)
+		return
+	}
+	if err := p.prepareBackupPathsLocked("", current); err != nil {
+		log.Printf("Failed to prepare backup path: %v", err)
+	}
+}
+
+func (p *Peer) prepareBackupPathsLocked(excludeIface string, excludeIP net.IP) error {
+	if p.intermediateConn == nil {
+		return fmt.Errorf("no intermediate connection available")
+	}
+	if p.preparedPath != nil {
+		return nil
+	}
+
+	candidates, err := candidateLocalIPs(excludeIface, excludeIP)
+	if err != nil {
+		return err
+	}
+	for _, ip := range candidates {
+		prepared, err := p.probeMigrationPath(ip)
+		if err != nil {
+			log.Printf("Backup path probe failed for %s: %v", ip, err)
+			continue
+		}
+		p.preparedPath = prepared
+		log.Printf("Prepared backup QUIC path via local IP %s", ip)
+		return nil
+	}
+	return fmt.Errorf("no viable backup path candidates")
+}
+
+func (p *Peer) probeMigrationPath(ip net.IP) (*preparedMigrationPath, error) {
+	prepared := &preparedMigrationPath{ip: ip}
+
+	udp, tr, err := newBoundTransport(ip)
+	if err != nil {
+		return nil, err
+	}
+	prepared.intermediateUDPConn = udp
+	prepared.intermediateTransport = tr
+
+	path, err := p.intermediateConn.AddPath(tr)
+	if err != nil {
+		prepared.close()
+		return nil, fmt.Errorf("failed to add intermediate path: %w", err)
+	}
+	prepared.intermediatePath = path
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := path.Probe(ctx); err != nil {
+		prepared.close()
+		return nil, fmt.Errorf("failed to probe intermediate path: %w", err)
+	}
+
+	if p.relayConn != nil {
+		relayUDP, relayTr, err := newBoundTransport(ip)
+		if err != nil {
+			log.Printf("Failed to create relay backup path transport: %v", err)
+		} else {
+			prepared.relayUDPConn = relayUDP
+			prepared.relayTransport = relayTr
+			relayPath, err := p.relayConn.AddPath(relayTr)
+			if err != nil {
+				log.Printf("Failed to add relay backup path: %v", err)
+				relayTr.Close()
+				relayUDP.Close()
+				prepared.relayTransport = nil
+				prepared.relayUDPConn = nil
+			} else {
+				relayCtx, relayCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := relayPath.Probe(relayCtx); err != nil {
+					log.Printf("Failed to probe relay backup path: %v", err)
+					relayPath.Close()
+					relayTr.Close()
+					relayUDP.Close()
+					prepared.relayTransport = nil
+					prepared.relayUDPConn = nil
+				} else {
+					prepared.relayPath = relayPath
+				}
+				relayCancel()
+			}
+		}
+	}
+
+	return prepared, nil
+}
+
+func (p *Peer) switchToPreparedPathLocked(oldAddr net.IP) error {
+	prepared := p.preparedPath
+	if prepared == nil {
+		return fmt.Errorf("no prepared path")
+	}
+
+	if err := prepared.intermediatePath.Switch(); err != nil {
+		return fmt.Errorf("failed to switch intermediate path: %w", err)
+	}
+	p.intermediateTransport = prepared.intermediateTransport
+	p.intermediateUdpConn = prepared.intermediateUDPConn
+
+	if prepared.relayPath != nil {
+		if err := prepared.relayPath.Switch(); err != nil {
+			log.Printf("Failed to switch relay path: %v", err)
+			_ = prepared.relayPath.Close()
+			if prepared.relayTransport != nil {
+				_ = prepared.relayTransport.Close()
+			}
+			if prepared.relayUDPConn != nil {
+				_ = prepared.relayUDPConn.Close()
+			}
+		} else {
+			p.relayTransport = prepared.relayTransport
+			p.relayUdpConn = prepared.relayUDPConn
+		}
+	}
+
+	p.preparedPath = nil
+	log.Printf("Switched QUIC path to prepared local IP %s", prepared.ip)
+
+	if err := p.sendNetworkChangeNotification(oldAddr); err != nil {
+		return fmt.Errorf("failed to notify network change after quality switch: %w", err)
+	}
+	if err := p.sendRelayAllowlistUpdate(); err != nil {
+		log.Printf("Failed to refresh relay allowlist after quality switch: %v", err)
+	}
+	return nil
+}
+
+func (p *preparedMigrationPath) close() {
+	if p == nil {
+		return
+	}
+	if p.intermediatePath != nil {
+		_ = p.intermediatePath.Close()
+	}
+	if p.intermediateTransport != nil {
+		_ = p.intermediateTransport.Close()
+	}
+	if p.intermediateUDPConn != nil {
+		_ = p.intermediateUDPConn.Close()
+	}
+	if p.relayPath != nil {
+		_ = p.relayPath.Close()
+	}
+	if p.relayTransport != nil {
+		_ = p.relayTransport.Close()
+	}
+	if p.relayUDPConn != nil {
+		_ = p.relayUDPConn.Close()
+	}
+}
+
+func newBoundTransport(ip net.IP) (*net.UDPConn, *quic.Transport, error) {
+	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: ip, Port: 0})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to listen UDP on %s: %w", ip, err)
+	}
+	return udp, &quic.Transport{Conn: udp}, nil
+}
+
+func candidateLocalIPs(excludeIface string, excludeIP net.IP) ([]net.IP, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list interfaces: %w", err)
+	}
+	type candidate struct {
+		ip    net.IP
+		score int
+	}
+	var candidates []candidate
+	for _, iface := range ifaces {
+		if (iface.Flags&net.FlagUp) == 0 || (iface.Flags&net.FlagLoopback) != 0 {
+			continue
+		}
+		if excludeIface != "" && iface.Name == excludeIface {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			default:
+				continue
+			}
+			ip4 := ip.To4()
+			if ip4 == nil {
+				continue
+			}
+			if excludeIP != nil && ip4.Equal(excludeIP.To4()) {
+				continue
+			}
+			candidates = append(candidates, candidate{ip: ip4, score: interfacePriority(iface.Name)})
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no alternate IPv4 address found")
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].score < candidates[j].score
+	})
+	out := make([]net.IP, 0, len(candidates))
+	for _, c := range candidates {
+		out = append(out, c.ip)
+	}
+	return out, nil
+}
+
+func interfacePriority(name string) int {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.HasPrefix(lower, "rmnet"),
+		strings.HasPrefix(lower, "ccmni"),
+		strings.HasPrefix(lower, "wwan"),
+		strings.HasPrefix(lower, "pdp"),
+		strings.HasPrefix(lower, "usb"):
+		return 0
+	case strings.HasPrefix(lower, "eth"),
+		strings.HasPrefix(lower, "en"):
+		return 1
+	case strings.HasPrefix(lower, "wlan"),
+		strings.HasPrefix(lower, "wl"):
+		return 2
+	default:
+		return 3
 	}
 }
 
