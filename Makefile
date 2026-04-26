@@ -68,10 +68,10 @@ exp-ps: deps cert # storing pids just in case of unexpected termination
 	$(MAKE) ps
 
 address-detection:
-	cd peer/cmd && go run network_monitor_standalone.go
+	cd peer/cmd && go run -tags network_monitor_standalone network_monitor_standalone.go
 
 cm-test:
-	cd peer/cmd && go run connection_migration.go -cert ../../$(CERT_FILE) -key ../../$(KEY_FILE) -serverAddr "$(SIGNALING_ADDR)"
+	cd peer/cmd && go run -tags connection_migration connection_migration.go -cert ../../$(CERT_FILE) -key ../../$(KEY_FILE) -serverAddr "$(SIGNALING_ADDR)"
 
 intermediate: deps cert
 	cd intermediate && go run . -cert="../$(CERT_FILE)" -key="../$(KEY_FILE)"
