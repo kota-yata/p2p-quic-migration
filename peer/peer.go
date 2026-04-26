@@ -439,7 +439,7 @@ func (p *Peer) migrateQUICConnection(conn *quic.Conn, candidate localIPCandidate
 		return nil, nil, fmt.Errorf("%s connection is already closed", label)
 	}
 
-	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: candidate.ip, Port: 0})
+	udp, err := listenUDPOnInterface(candidate.iface, candidate.ip)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to listen UDP for %s on %s ip=%s: %w", label, candidate.iface, candidate.ip, err)
 	}
@@ -458,7 +458,6 @@ func (p *Peer) migrateQUICConnection(conn *quic.Conn, candidate localIPCandidate
 	log.Printf("Probing %s path via %s ip=%s local=%s", label, candidate.iface, candidate.ip, udp.LocalAddr())
 	if err := path.Probe(ctx); err != nil {
 		path.Close()
-		transport.Close()
 		udp.Close()
 		return nil, nil, fmt.Errorf("failed to probe %s path via %s ip=%s: %w", label, candidate.iface, candidate.ip, err)
 	}
@@ -466,7 +465,6 @@ func (p *Peer) migrateQUICConnection(conn *quic.Conn, candidate localIPCandidate
 	log.Printf("Switching %s path via %s ip=%s", label, candidate.iface, candidate.ip)
 	if err := path.Switch(); err != nil {
 		path.Close()
-		transport.Close()
 		udp.Close()
 		return nil, nil, fmt.Errorf("failed to switch %s path via %s ip=%s: %w", label, candidate.iface, candidate.ip, err)
 	}
