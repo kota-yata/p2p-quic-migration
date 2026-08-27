@@ -64,7 +64,7 @@ Notes
   - Semantics: Replaces the relay allow‑list for the sending peer. The Relay MUST forward only packets/streams originating from source addresses present in this list and MUST discard others. Send at initial relay connection establishment; resend whenever the counterparty's address changes.
 
 ## Audio Relay Stream
-- After sending 0x06 on a fresh stream, the remainder of that stream is raw audio data (codec/format negotiated out‑of‑band for now; current implementation uses MP3 frames). No additional control framing is applied to media bytes.
+- After sending 0x06 on a fresh stream, the remainder of that stream is raw audio data (codec/format negotiated out-of-band for now; the current implementation uses 48 kHz, stereo, signed 16-bit little-endian PCM decoded from MP3 by Byrd). No additional control framing is applied to media bytes.
 - The target peer receives a corresponding inbound stream carrying those raw audio bytes.
 
 ## Flow Summary

@@ -2,7 +2,9 @@ p2p-quic-migration is a project to seek the smallest interruption time when a pe
 
 # Development
 ## Prerequisites
-Gstreamer with the "good" plugin is required.
+Go 1.26 or later is required.
+
+GStreamer with the "good" plugin is required on receiving peers for audio playback.
 
 ## Running programs 
 ```bash

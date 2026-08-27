@@ -1,8 +1,9 @@
 module github.com/kota-yata/p2p-quic-migration
 
-go 1.24.0
+go 1.26
 
 require (
+	github.com/kota-yata/byrd-mp3 v0.2.0
 	github.com/quic-go/quic-go v0.58.0
 	github.com/vishvananda/netlink v1.3.1
 	golang.org/x/sys v0.39.0
